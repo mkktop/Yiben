@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
   ArrowRightToLine,
@@ -44,6 +43,8 @@ export interface ReaderChromeProps {
   onToggleBookmark: () => void
   /** 跳页：同话直接定位；跨话（书签）带章节 id */
   onJump: (chapterId: number, page0: number) => void
+  /** 返回（ReaderPage 持有，带兜底逻辑） */
+  onBack: () => void
   /** 浮层面板（快捷键与按钮共用同一状态，由 ReaderPage 持有） */
   panel: 'none' | 'bookmarks' | 'help'
   onPanelChange: (p: 'none' | 'bookmarks' | 'help') => void
@@ -70,10 +71,10 @@ export function ReaderChrome({
   isBookmarked,
   onToggleBookmark,
   onJump,
+  onBack,
   panel,
   onPanelChange
 }: ReaderChromeProps) {
-  const navigate = useNavigate()
   const {
     mode,
     fit,
@@ -109,7 +110,7 @@ export function ReaderChrome({
         )}
       >
         <button
-          onClick={() => navigate(-1)}
+          onClick={onBack}
           className="grid size-8 place-items-center rounded-md hover:bg-white/10"
           title="返回 (Esc)"
         >

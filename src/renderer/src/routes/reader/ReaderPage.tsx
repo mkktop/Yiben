@@ -27,6 +27,29 @@ export function ReaderPage() {
     [chapterId]
   )
   const store = useReaderStore()
+
+  /**
+   * 返回：能 back 就 back。
+   * navigate(-1) 在个别环境（dev/HMR）下可能静默无效，250ms 后若仍在阅读器则显式回主页兜底；
+   * back 成功时本组件卸载，定时器被清理，兜底不会触发。
+   */
+  const backTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const goBack = useCallback(() => {
+    if (backTimer.current) clearTimeout(backTimer.current)
+    const state = window.history.state as { idx?: number } | null
+    const idx = typeof state?.idx === 'number' ? state.idx : -1
+    if (idx > 0) {
+      backTimer.current = setTimeout(() => {
+        if (window.location.hash.includes('/reader/')) navigate('/', { replace: true })
+      }, 250)
+      navigate(-1)
+      return
+    }
+    navigate('/')
+  }, [navigate])
+
+  useEffect(() => () => { if (backTimer.current) clearTimeout(backTimer.current) }, [])
+
   /** 已发起初始化的章节（按章节各初始化一次） */
   const initFor = useRef<number | null>(null)
   /** 初始化完成的章节：在此之前不写进度，避免用默认页数误判「已读完」 */
@@ -352,13 +375,13 @@ export function ReaderPage() {
             setPanel('none')
             break
           }
-          if (!document.fullscreenElement) window.history.back()
+          if (!document.fullscreenElement) goBack()
           break
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onModeChange, toggleFullscreen, toggleBookmark, goNext, goPrev, jumpTo, activeId])
+  }, [onModeChange, toggleFullscreen, toggleBookmark, goNext, goPrev, jumpTo, activeId, goBack])
 
   if (error) {
     return (
@@ -414,6 +437,7 @@ export function ReaderPage() {
         isBookmarked={isBookmarked}
         onToggleBookmark={toggleBookmark}
         onJump={jumpTo}
+        onBack={goBack}
         panel={panel}
         onPanelChange={setPanel}
       />
