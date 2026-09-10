@@ -5,7 +5,7 @@ import { usePagePreload } from './usePagePreload'
 import { ImageViewer, WebtoonViewer } from './ImageViewer'
 import { PdfViewer } from './PdfViewer'
 import { ReaderChrome } from './ReaderChrome'
-import { useReaderStore, atLastScreen, type ReaderMode } from '@/stores/reader'
+import { useReaderStore, atLastScreen, resumeStartPage, type ReaderMode } from '@/stores/reader'
 import { useDataStore } from '@/stores/data'
 import type { BookmarkInfo, ReaderChapterInfo } from '@shared/types'
 
@@ -59,11 +59,12 @@ export function ReaderPage() {
   const activeId = chapter?.id ?? 0
   const seriesId = chapter?.series_id ?? 0
 
-  // 书签深链（/reader/:id?p=N）；progress 仍会照常记录
+  // 书签深链（/reader/:id?p=N）；普通进入时未读完恢复进度、已读完从头开始
   const deepParam = search.get('p')
   const deepPage =
     deepParam != null && Number.isFinite(Number(deepParam)) ? Math.max(0, Number(deepParam) - 1) : null
-  const startPage = deepPage ?? info?.progress?.page ?? 0
+  const startPage =
+    deepPage ?? resumeStartPage(info?.progress ?? null, chapter?.page_count ?? 0)
 
   useEffect(() => {
     if (!chapter || initFor.current === chapter.id) return
@@ -423,12 +424,9 @@ export function ReaderPage() {
           onNext={goNext}
         />
       ) : (
-        <ImageViewer
-          key={`${activeId}-${store.mode}`}
-          chapterId={activeId}
-          onNext={goNext}
-          onPrev={goPrev}
-        />
+        // 点击区只翻页不跨话（store 的 next/prev 自带章节内钳位）；
+        // 跨话走顶栏按钮、末页卡片或键盘（到末页自动进下一话）
+        <ImageViewer key={`${activeId}-${store.mode}`} chapterId={activeId} />
       )}
 
       <ReaderChrome

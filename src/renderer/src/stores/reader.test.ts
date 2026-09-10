@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { atLastScreen, spreadPages, useReaderStore } from './reader'
+import { atLastScreen, resumeStartPage, spreadPages, useReaderStore } from './reader'
 
 /** 把 store 初始化成指定页数/起始页（prefs 用默认值） */
 function setup(pageCount: number, startPage = 0): void {
@@ -157,5 +157,23 @@ describe('atLastScreen（读完进下一话的边界）', () => {
   it('页数未知（云端压缩包未回填）时不判定读完', () => {
     expect(atLastScreen(0, 0, 'single')).toBe(false)
     expect(atLastScreen(99, 0, 'double')).toBe(false)
+  })
+})
+
+describe('resumeStartPage（打开章节的起始页）', () => {
+  it('没有进度从第 1 页开始', () => {
+    expect(resumeStartPage(null, 20)).toBe(0)
+  })
+
+  it('未读完回到上次位置', () => {
+    expect(resumeStartPage({ page: 7, completed: 0 }, 20)).toBe(7)
+    // 页数未知（云端压缩包）时只要没标完成就照常恢复
+    expect(resumeStartPage({ page: 12, completed: 0 }, 0)).toBe(12)
+  })
+
+  // 回归：点「下一话」跳进读过的章节曾落在末页，随手翻页又触发进下一话
+  it('已读完（或进度停在末页）从头开始', () => {
+    expect(resumeStartPage({ page: 19, completed: 1 }, 20)).toBe(0)
+    expect(resumeStartPage({ page: 19, completed: 0 }, 20)).toBe(0)
   })
 })

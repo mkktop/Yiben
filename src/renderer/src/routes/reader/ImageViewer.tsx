@@ -8,9 +8,8 @@ interface ImageViewerProps {
   chapterId: number
   /** 条漫模式用于回报当前页；单页/双页模式自行管理页码 */
   onCurrentPage?: (page: number) => void
-  /** 越界时由外层接管（末页进下一话 / 首页回上一话） */
+  /** 条漫滚到底部再往下时由外层接管（进下一话） */
   onNext?: () => void
-  onPrev?: () => void
 }
 
 const PAGE_RETRIES = 2
@@ -86,12 +85,10 @@ function PageImage({
   )
 }
 
-/** 单页 / 双页（RTL）模式的图片视口 */
-export function ImageViewer({ chapterId, onNext, onPrev }: ImageViewerProps) {
+/** 单页 / 双页（RTL）模式的图片视口：点击区只在章节内翻页，不跨话 */
+export function ImageViewer({ chapterId }: ImageViewerProps) {
   const { mode, fit, rtl, rotate, page, pageCount, widePages, next, prev, setPage } =
     useReaderStore()
-  const goNext = onNext ?? next
-  const goPrev = onPrev ?? prev
   const [zoom, setZoom] = useState(1)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -142,12 +139,13 @@ export function ImageViewer({ chapterId, onNext, onPrev }: ImageViewerProps) {
       ref={containerRef}
       className="relative flex h-full w-full items-center justify-center overflow-auto"
       onClick={(e) => {
-        // 左 1/3 上一页，右 1/3 下一页（RTL 时方向相反）
+        // 左 1/3 上一页，右 1/3 下一页（RTL 时方向相反）；只在章节内翻页，
+        // 跨话走顶栏按钮 / 末页卡片 / 键盘（store 的 next/prev 自带钳位）
         const x = e.clientX / window.innerWidth
         const forward = rtl ? x < 0.33 : x > 0.66
         const back = rtl ? x > 0.66 : x < 0.33
-        if (forward) goNext()
-        else if (back) goPrev()
+        if (forward) next()
+        else if (back) prev()
       }}
     >
       <div className={layoutClass}>

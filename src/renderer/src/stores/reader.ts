@@ -114,6 +114,19 @@ export function atLastScreen(
 }
 
 /**
+ * 恢复起始页：未读完回到上次位置；已读完（或进度已停在末页）从头开始。
+ * 否则点「下一话」跳进一话读过的章节会落在末页，随手一翻又触发进下一话。
+ */
+export function resumeStartPage(
+  progress: { page: number; completed: number } | null,
+  pageCount: number
+): number {
+  if (!progress) return 0
+  if (progress.completed || (pageCount > 0 && progress.page >= pageCount - 1)) return 0
+  return progress.page
+}
+
+/**
  * double 模式下当前 spread 展示的页索引数组（rtl 只决定返回数组内的左右顺序）。
  * 约定：第 0 页（封面）单独展示，之后按阅读顺序两两配对；
  * wide 中的跨页大图单独占一屏，它后面的配对从下一页重新开始。
