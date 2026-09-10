@@ -1,0 +1,99 @@
+import { beforeEach, describe, expect, it } from 'vitest'
+import { spreadPages, useReaderStore } from './reader'
+
+/** 把 store 初始化成指定页数/起始页（prefs 用默认值） */
+function setup(pageCount: number, startPage = 0): void {
+  useReaderStore.getState().init({}, pageCount, startPage)
+}
+
+describe('spreadPages', () => {
+  it('封面单独展示，之后按 (1,2) (3,4) 成对', () => {
+    expect(spreadPages(0, 10, false)).toEqual([0])
+    expect(spreadPages(1, 10, false)).toEqual([1, 2])
+    expect(spreadPages(2, 10, false)).toEqual([1, 2])
+    expect(spreadPages(3, 10, false)).toEqual([3, 4])
+  })
+
+  it('日漫方向只反转 spread 内的左右顺序', () => {
+    expect(spreadPages(1, 10, true)).toEqual([2, 1])
+    expect(spreadPages(2, 10, true)).toEqual([2, 1])
+  })
+
+  it('末页落单', () => {
+    expect(spreadPages(9, 10, false)).toEqual([9])
+  })
+
+  it('页数未知时退化为单页', () => {
+    expect(spreadPages(0, 0, true)).toEqual([0])
+    expect(spreadPages(3, 0, true)).toEqual([3])
+  })
+})
+
+describe('翻页步进', () => {
+  beforeEach(() => setup(10))
+
+  it('单页模式逐页递增', () => {
+    const s = useReaderStore.getState()
+    s.next()
+    expect(useReaderStore.getState().page).toBe(1)
+    useReaderStore.getState().prev()
+    expect(useReaderStore.getState().page).toBe(0)
+  })
+
+  // 回归：曾经在 double + rtl（默认方向）下 next 会反向，导致连按右方向键卡在封面
+  it('双页 + 日漫方向仍然能推进', () => {
+    useReaderStore.getState().patch({ mode: 'double' })
+    const visited: number[] = [useReaderStore.getState().page]
+    for (let i = 0; i < 5; i++) {
+      useReaderStore.getState().next()
+      visited.push(useReaderStore.getState().page)
+    }
+    expect(visited).toEqual([0, 2, 4, 6, 8, 9])
+  })
+
+  it('双页 + 从左往右 与 日漫方向步进一致', () => {
+    useReaderStore.getState().patch({ mode: 'double', rtl: false })
+    useReaderStore.getState().next()
+    expect(useReaderStore.getState().page).toBe(2)
+    useReaderStore.getState().prev()
+    expect(useReaderStore.getState().page).toBe(0)
+  })
+
+  it('不会越过首页', () => {
+    useReaderStore.getState().prev()
+    expect(useReaderStore.getState().page).toBe(0)
+  })
+
+  it('不会越过末页', () => {
+    useReaderStore.getState().setPage(99)
+    expect(useReaderStore.getState().page).toBe(9)
+  })
+})
+
+describe('页数未知（页面回填前）', () => {
+  // 回归：pageCount=0 时 setPage 曾算出 -1，协议层直接报「页码越界」
+  it('不会产生负数页码', () => {
+    setup(0)
+    useReaderStore.getState().prev()
+    expect(useReaderStore.getState().page).toBe(0)
+  })
+
+  it('未知页数时不做上界钳位，仍可向后翻', () => {
+    setup(0)
+    useReaderStore.getState().next()
+    expect(useReaderStore.getState().page).toBe(1)
+  })
+
+  it('初始化时保留恢复位置而不是压回 0', () => {
+    setup(0, 12)
+    expect(useReaderStore.getState().page).toBe(12)
+  })
+
+  it('页数回填后重新钳位', () => {
+    setup(0, 12)
+    const s = useReaderStore.getState()
+    useReaderStore.setState({ pageCount: 5 })
+    s.setPage(useReaderStore.getState().page)
+    expect(useReaderStore.getState().page).toBe(4)
+  })
+})

@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+*.log
+.DS_Store
+.env
+
+# tsc 增量构建缓存
+*.tsbuildinfo
