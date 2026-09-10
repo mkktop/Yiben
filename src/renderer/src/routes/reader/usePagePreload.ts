@@ -10,7 +10,8 @@ export function usePagePreload(
   enabled = true
 ): void {
   useEffect(() => {
-    if (!enabled) return
+    // 章节尚未加载（chapterId=0）时跳过，否则协议层会刷一堆 chapter not found
+    if (!enabled || chapterId <= 0) return
     for (let d = 1; d <= range; d++) {
       for (const p of [page + d, page - d]) {
         if (p < 0 || p >= pageCount) continue
