@@ -129,6 +129,21 @@ function migrate(db: Database.Database): void {
       size INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (chapter_id, idx)
     );
+
+    CREATE TABLE IF NOT EXISTS bookmarks (
+      chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+      page INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (chapter_id, page)
+    );
+
+    CREATE TABLE IF NOT EXISTS page_dims (
+      chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+      idx INTEGER NOT NULL,
+      w INTEGER NOT NULL,
+      h INTEGER NOT NULL,
+      PRIMARY KEY (chapter_id, idx)
+    );
   `)
 
   // 云盘字段（渐进迁移）
@@ -144,6 +159,8 @@ function migrate(db: Database.Database): void {
   tryAlter('ALTER TABLE chapters ADD COLUMN cloud_file_id TEXT')
   tryAlter('ALTER TABLE series ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0')
   tryAlter('ALTER TABLE series ADD COLUMN missing INTEGER NOT NULL DEFAULT 0')
+  // 用户手动编辑过元数据：之后的扫描不覆盖这些字段
+  tryAlter('ALTER TABLE series ADD COLUMN meta_edited INTEGER NOT NULL DEFAULT 0')
 }
 
 /** 每次扫描后重建全文索引（藏书量级下重建成本可忽略） */
@@ -212,11 +229,11 @@ export function upsertSeries(s: SeriesUpsert): number {
        VALUES (@library_id, @title, @author, @description, @status, @tags, @folder_path, @is_single_file, @added_at)
        ON CONFLICT(folder_path) DO UPDATE SET
          library_id = excluded.library_id,
-         title = excluded.title,
-         author = excluded.author,
-         description = excluded.description,
-         status = excluded.status,
-         tags = excluded.tags,
+         title = CASE WHEN series.meta_edited = 1 THEN series.title ELSE excluded.title END,
+         author = CASE WHEN series.meta_edited = 1 THEN series.author ELSE excluded.author END,
+         description = CASE WHEN series.meta_edited = 1 THEN series.description ELSE excluded.description END,
+         status = CASE WHEN series.meta_edited = 1 THEN series.status ELSE excluded.status END,
+         tags = CASE WHEN series.meta_edited = 1 THEN series.tags ELSE excluded.tags END,
          is_single_file = excluded.is_single_file,
          missing = 0,
          hidden = CASE WHEN series.library_id = excluded.library_id THEN series.hidden ELSE 0 END
@@ -224,6 +241,28 @@ export function upsertSeries(s: SeriesUpsert): number {
     )
     .get({ added_at: Date.now(), ...s }) as { id: number }
   return row.id
+}
+
+export interface SeriesMetaPatch {
+  title?: string
+  author?: string | null
+  status?: string | null
+  /** JSON 数组字符串 */
+  tags?: string | null
+  description?: string | null
+}
+
+/** 手动编辑元数据：只改传入的字段，并打上 meta_edited 防止重扫覆盖 */
+export function updateSeriesMeta(id: number, patch: SeriesMetaPatch): void {
+  const fields: string[] = []
+  const params: Record<string, unknown> = { id }
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue
+    fields.push(`${key} = @${key}`)
+    params[key] = value
+  }
+  if (fields.length === 0) return
+  db.prepare(`UPDATE series SET meta_edited = 1, ${fields.join(', ')} WHERE id = @id`).run(params)
 }
 
 export interface RetireResult {
@@ -335,6 +374,15 @@ export function setSeriesHidden(seriesId: number, hidden: boolean): void {
   db.prepare('UPDATE series SET hidden = ? WHERE id = ?').run(hidden ? 1 : 0, seriesId)
 }
 
+/** 批量移出书架 */
+export function setSeriesHiddenMany(ids: number[]): void {
+  const stmt = db.prepare('UPDATE series SET hidden = 1 WHERE id = ?')
+  const tx = db.transaction((list: number[]) => {
+    for (const id of list) stmt.run(id)
+  })
+  tx(ids)
+}
+
 // ---------- 云盘章节页映射 ----------
 
 export function replaceChapterPages(
@@ -401,7 +449,7 @@ export function countByLibrary(libraryId: number): { series: number; chapters: n
 export interface SeriesListOptions {
   libraryId?: number
   query?: string
-  filter?: 'all' | 'unread' | 'reading' | 'recent'
+  filter?: 'all' | 'unread' | 'reading' | 'read' | 'recent'
   limit?: number
   offset?: number
 }
@@ -433,11 +481,21 @@ export function listSeries(opts: SeriesListOptions = {}): SeriesRow[] {
     conds.push(
       'EXISTS (SELECT 1 FROM progress p JOIN chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id AND p.completed = 0)'
     )
+  } else if (opts.filter === 'read') {
+    conds.push(
+      'EXISTS (SELECT 1 FROM progress p JOIN chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id)'
+    )
   }
 
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
+  // 最近阅读：按该系列最近一次进度更新时间倒排（从未读过的排最后）
   const order =
-    opts.filter === 'recent' ? 'ORDER BY s.added_at DESC' : 'ORDER BY s.title COLLATE NOCASE'
+    opts.filter === 'read'
+      ? `ORDER BY (SELECT MAX(p.updated_at) FROM progress p
+           JOIN chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id) DESC`
+      : opts.filter === 'recent'
+        ? 'ORDER BY s.added_at DESC'
+        : 'ORDER BY s.title COLLATE NOCASE'
   const limit = opts.limit ? `LIMIT @limit OFFSET @offset` : ''
   if (opts.limit) {
     params.limit = opts.limit
@@ -588,4 +646,166 @@ export function recentlyAdded(limit: number): SeriesRow[] {
       'SELECT * FROM series WHERE hidden = 0 AND missing = 0 ORDER BY added_at DESC LIMIT ?'
     )
     .all(limit) as SeriesRow[]
+}
+
+// ---------- 跨话导航 ----------
+
+export interface NeighborChapter {
+  id: number
+  title: string
+  page_count: number
+}
+
+export interface Neighbors {
+  index: number
+  total: number
+  prev: NeighborChapter | null
+  next: NeighborChapter | null
+}
+
+/** 同系列内按 sort_index 的前后话（阅读器末页进下一话用） */
+export function neighborChapters(chapterId: number): Neighbors | null {
+  const row = db
+    .prepare('SELECT series_id, sort_index FROM chapters WHERE id = ?')
+    .get(chapterId) as { series_id: number; sort_index: number } | undefined
+  if (!row) return null
+  const all = db
+    .prepare(
+      'SELECT id, title, page_count FROM chapters WHERE series_id = ? ORDER BY sort_index'
+    )
+    .all(row.series_id) as NeighborChapter[]
+  const index = all.findIndex((c) => c.id === chapterId)
+  return {
+    index,
+    total: all.length,
+    prev: index > 0 ? all[index - 1] : null,
+    next: index >= 0 && index < all.length - 1 ? all[index + 1] : null
+  }
+}
+
+// ---------- 书签 ----------
+
+export function toggleBookmark(chapterId: number, page: number): boolean {
+  const existing = db
+    .prepare('SELECT 1 FROM bookmarks WHERE chapter_id = ? AND page = ?')
+    .get(chapterId, page)
+  if (existing) {
+    db.prepare('DELETE FROM bookmarks WHERE chapter_id = ? AND page = ?').run(chapterId, page)
+    return false
+  }
+  db.prepare('INSERT INTO bookmarks (chapter_id, page, created_at) VALUES (?, ?, ?)').run(
+    chapterId,
+    page,
+    Date.now()
+  )
+  return true
+}
+
+export interface BookmarkRow {
+  chapter_id: number
+  chapter_title: string
+  page: number
+  created_at: number
+}
+
+/** 系列的全部书签（跨话），按添加时间倒序 */
+export function bookmarksForSeries(seriesId: number): BookmarkRow[] {
+  return db
+    .prepare(
+      `SELECT b.chapter_id, c.title AS chapter_title, b.page, b.created_at
+       FROM bookmarks b JOIN chapters c ON c.id = b.chapter_id
+       WHERE c.series_id = ? ORDER BY b.created_at DESC`
+    )
+    .all(seriesId) as BookmarkRow[]
+}
+
+/** 某话已加书签的页码列表（升序，导出用） */
+export function bookmarkPages(chapterId: number): number[] {
+  return (
+    db.prepare('SELECT page FROM bookmarks WHERE chapter_id = ? ORDER BY page').all(chapterId) as Array<{ page: number }>
+  ).map((r) => r.page)
+}
+
+/** 加书签（已存在则忽略）；返回是否新插入 */
+export function addBookmark(chapterId: number, page: number): boolean {
+  const r = db
+    .prepare('INSERT OR IGNORE INTO bookmarks (chapter_id, page, created_at) VALUES (?, ?, ?)')
+    .run(chapterId, page, Date.now())
+  return r.changes > 0
+}
+
+/** 按目录路径找系列 id（进度导入对账用） */
+export function findSeriesIdByPath(folderPath: string): number | null {
+  const row = db.prepare('SELECT id FROM series WHERE folder_path = ?').get(folderPath) as
+    | { id: number }
+    | undefined
+  return row?.id ?? null
+}
+
+// ---------- 页尺寸（双页模式的跨页大图识别） ----------
+
+export interface PageDim {
+  idx: number
+  w: number
+  h: number
+}
+
+export function getPageDims(chapterId: number): PageDim[] {
+  return db
+    .prepare('SELECT idx, w, h FROM page_dims WHERE chapter_id = ? ORDER BY idx')
+    .all(chapterId) as PageDim[]
+}
+
+export function savePageDims(chapterId: number, dims: PageDim[]): void {
+  const tx = db.transaction((list: PageDim[]) => {
+    const ins = db.prepare(
+      'INSERT INTO page_dims (chapter_id, idx, w, h) VALUES (?, ?, ?, ?) ' +
+        'ON CONFLICT(chapter_id, idx) DO UPDATE SET w = excluded.w, h = excluded.h'
+    )
+    for (const d of list) ins.run(chapterId, d.idx, d.w, d.h)
+  })
+  tx(dims)
+}
+
+// ---------- 进度管理（标记已读 / 重置） ----------
+
+/** 整系列标记已读/未读：已读时页码落在末页（页数未知则保持原页码） */
+export function setSeriesProgress(seriesId: number, read: boolean): void {
+  const chapters = db
+    .prepare('SELECT id, page_count FROM chapters WHERE series_id = ?')
+    .all(seriesId) as Array<{ id: number; page_count: number }>
+  const tx = db.transaction(() => {
+    for (const c of chapters) {
+      if (!read) {
+        db.prepare('DELETE FROM progress WHERE chapter_id = ?').run(c.id)
+        continue
+      }
+      const [p] = getProgress([c.id])
+      const page = c.page_count > 0 ? c.page_count - 1 : (p?.page ?? 0)
+      saveProgress(c.id, page, true)
+    }
+  })
+  tx()
+}
+
+/** 重置整系列进度 */
+export function resetSeriesProgress(seriesId: number): void {
+  db.prepare(
+    'DELETE FROM progress WHERE chapter_id IN (SELECT id FROM chapters WHERE series_id = ?)'
+  ).run(seriesId)
+}
+
+/** 单话标记已读/未读（章节列表的勾选） */
+export function setChapterCompleted(chapterId: number, completed: boolean): void {
+  const ch = db
+    .prepare('SELECT page_count FROM chapters WHERE id = ?')
+    .get(chapterId) as { page_count: number } | undefined
+  if (!ch) return
+  if (!completed) {
+    db.prepare('UPDATE progress SET completed = 0 WHERE chapter_id = ?').run(chapterId)
+    return
+  }
+  const [p] = getProgress([chapterId])
+  const page = ch.page_count > 0 ? ch.page_count - 1 : (p?.page ?? 0)
+  saveProgress(chapterId, page, true)
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { RotateCw } from 'lucide-react'
 import { pageUrl } from '@shared/types'
 import { spreadPages, useReaderStore } from '@/stores/reader'
 import { useCurrentPageObserver } from './useCurrentPageObserver'
@@ -7,11 +8,90 @@ interface ImageViewerProps {
   chapterId: number
   /** 条漫模式用于回报当前页；单页/双页模式自行管理页码 */
   onCurrentPage?: (page: number) => void
+  /** 越界时由外层接管（末页进下一话 / 首页回上一话） */
+  onNext?: () => void
+  onPrev?: () => void
+}
+
+const PAGE_RETRIES = 2
+const RETRY_MS = 1500
+
+/**
+ * 单页图片：加载失败后先静默重试（云端 502/超时多数是瞬时的，换查询串强制重发），
+ * 仍失败则展示手动重试占位，不再留下裂图。
+ */
+function PageImage({
+  src,
+  alt,
+  className,
+  style,
+  dataPage,
+  eager
+}: {
+  src: string
+  alt: string
+  className?: string
+  style?: React.CSSProperties
+  dataPage?: number
+  eager?: boolean
+}) {
+  const [attempt, setAttempt] = useState(0)
+  const [failed, setFailed] = useState(false)
+
+  // 翻页/重试换地址时复位
+  useEffect(() => {
+    setAttempt(0)
+    setFailed(false)
+  }, [src])
+
+  if (failed) {
+    return (
+      <div
+        data-page={dataPage}
+        className="grid place-items-center gap-2 bg-white/5 text-white/70"
+        style={{ aspectRatio: '2 / 3', ...style }}
+      >
+        <RotateCw className="size-6" />
+        <button
+          className="rounded-md border border-white/30 px-3 py-1.5 text-xs hover:bg-white/10"
+          onClick={() => {
+            setFailed(false)
+            setAttempt((a) => a + 1)
+          }}
+        >
+          加载失败，点击重试
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <img
+      key={attempt}
+      src={attempt > 0 ? `${src}?r=${attempt}` : src}
+      data-page={dataPage}
+      alt={alt}
+      draggable={false}
+      loading={eager ? 'eager' : 'lazy'}
+      onError={() => {
+        if (attempt < PAGE_RETRIES) {
+          window.setTimeout(() => setAttempt((a) => a + 1), RETRY_MS)
+        } else {
+          setFailed(true)
+        }
+      }}
+      className={className}
+      style={style}
+    />
+  )
 }
 
 /** 单页 / 双页（RTL）模式的图片视口 */
-export function ImageViewer({ chapterId }: ImageViewerProps) {
-  const { mode, fit, rtl, rotate, page, pageCount, next, prev, setPage } = useReaderStore()
+export function ImageViewer({ chapterId, onNext, onPrev }: ImageViewerProps) {
+  const { mode, fit, rtl, rotate, page, pageCount, widePages, next, prev, setPage } =
+    useReaderStore()
+  const goNext = onNext ?? next
+  const goPrev = onPrev ?? prev
   const [zoom, setZoom] = useState(1)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -32,7 +112,8 @@ export function ImageViewer({ chapterId }: ImageViewerProps) {
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
 
-  const pagesToShow = mode === 'double' ? spreadPages(page, pageCount, rtl) : [page]
+  const pagesToShow =
+    mode === 'double' ? spreadPages(page, pageCount, rtl, widePages) : [page]
   const isDouble = pagesToShow.length > 1
 
   // 双页永远并排；单页按适配方式铺排
@@ -40,9 +121,7 @@ export function ImageViewer({ chapterId }: ImageViewerProps) {
     ? 'flex h-full w-full items-center justify-center gap-0'
     : fit === 'width'
       ? 'flex w-full flex-col items-center'
-      : fit === 'height'
-        ? 'flex h-full items-center justify-center'
-        : 'flex h-full items-center justify-center'
+      : 'flex h-full items-center justify-center'
 
   const imgStyle: React.CSSProperties = {
     transform: `rotate(${rotate}deg) scale(${zoom})`,
@@ -67,17 +146,17 @@ export function ImageViewer({ chapterId }: ImageViewerProps) {
         const x = e.clientX / window.innerWidth
         const forward = rtl ? x < 0.33 : x > 0.66
         const back = rtl ? x > 0.66 : x < 0.33
-        if (forward) next()
-        else if (back) prev()
+        if (forward) goNext()
+        else if (back) goPrev()
       }}
     >
       <div className={layoutClass}>
         {pagesToShow.map((p) => (
-          <img
+          <PageImage
             key={p}
             src={pageUrl(chapterId, p)}
             alt={`第 ${p + 1} 页`}
-            draggable={false}
+            eager
             style={imgStyle}
             className="select-none"
           />
@@ -118,23 +197,47 @@ function ZoomBtn({ label, onClick }: { label: string; onClick: () => void }) {
 }
 
 /** 条漫（Webtoon）模式：垂直连续滚动 */
-export function WebtoonViewer({ chapterId, onCurrentPage = () => {} }: ImageViewerProps) {
+export function WebtoonViewer({
+  chapterId,
+  onCurrentPage = () => {},
+  onNext
+}: ImageViewerProps) {
   const pageCount = useReaderStore((s) => s.pageCount)
   const ref = useRef<HTMLDivElement>(null)
 
   useCurrentPageObserver(ref, onCurrentPage)
 
+  // 滚到底部再往下滚 → 交由外层进下一话
+  const atBottom = useRef(false)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const onScroll = (): void => {
+      atBottom.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 4
+    }
+    const onWheel = (e: WheelEvent): void => {
+      if (e.deltaY > 0 && atBottom.current && onNext) {
+        e.preventDefault()
+        onNext()
+      }
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('wheel', onWheel)
+    }
+  }, [onNext])
+
   return (
     <div ref={ref} className="h-full overflow-y-auto bg-black">
       <div className="mx-auto max-w-3xl">
         {Array.from({ length: pageCount }, (_, p) => (
-          <img
+          <PageImage
             key={p}
-            data-page={p}
             src={pageUrl(chapterId, p)}
             alt={`第 ${p + 1} 页`}
-            loading="lazy"
-            draggable={false}
+            dataPage={p}
             className="block w-full"
           />
         ))}

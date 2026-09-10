@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow } from 'electron'
+import { app, shell, BrowserWindow, screen } from 'electron'
 import { join } from 'path'
 import { writeFile } from 'fs/promises'
 import { is } from '@electron-toolkit/utils'
@@ -6,6 +6,8 @@ import { openDb } from './db'
 import { registerProtocol, attachProtocolHandlers } from './protocol'
 import { registerIpc } from './ipc'
 import { runSelfTest } from './selftest'
+import { getSetting, setSetting } from './settings'
+import { startWatchers } from './watcher'
 
 // 必须在 app ready 之前注册自定义协议
 registerProtocol()
@@ -55,10 +57,38 @@ async function debugScreenshot(win: BrowserWindow): Promise<void> {
   app.quit()
 }
 
+interface WindowBounds {
+  x?: number
+  y?: number
+  width: number
+  height: number
+  maximized?: boolean
+}
+
+/** 旧坐标可能落在已拔掉的显示器上：任一当前显示器能完整容纳才恢复位置 */
+function restorableBounds(saved: WindowBounds | null): WindowBounds | null {
+  if (!saved || !saved.width || !saved.height || saved.x === undefined || saved.y === undefined) {
+    return null
+  }
+  const fits = screen.getAllDisplays().some((d) => {
+    const a = d.workArea
+    return (
+      saved.x! >= a.x - 10 &&
+      saved.y! >= a.y - 10 &&
+      saved.x! + saved.width <= a.x + a.width + 10 &&
+      saved.y! + saved.height <= a.y + a.height + 10
+    )
+  })
+  return fits ? saved : null
+}
+
 function createWindow(): void {
+  const saved = restorableBounds(getSetting<WindowBounds | null>('windowBounds', null))
   const mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    width: saved?.width ?? 1280,
+    height: saved?.height ?? 820,
+    x: saved?.x,
+    y: saved?.y,
     minWidth: 960,
     minHeight: 640,
     show: false,
@@ -69,6 +99,19 @@ function createWindow(): void {
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false
+    }
+  })
+  if (saved?.maximized) mainWindow.maximize()
+
+  // getNormalBounds 在最大化时返回还原后的尺寸，恢复时不糊
+  mainWindow.on('close', () => {
+    try {
+      setSetting('windowBounds', {
+        ...mainWindow.getNormalBounds(),
+        maximized: mainWindow.isMaximized()
+      })
+    } catch {
+      /* 窗口已销毁等场景忽略 */
     }
   })
 
@@ -96,6 +139,9 @@ app.whenReady().then(() => {
   openDb()
   attachProtocolHandlers()
   registerIpc()
+
+  // 本地库文件监听（可在设置里关闭）；自测模式不启动
+  if (!process.env['YIBEN_SELFTEST'] && getSetting('autoRescan', true)) startWatchers()
 
   const fixture = process.env['YIBEN_SELFTEST']
   if (fixture) {

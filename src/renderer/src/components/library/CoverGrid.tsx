@@ -1,25 +1,59 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { BookOpen } from 'lucide-react'
+import { BookOpen, Check } from 'lucide-react'
 import type { Series } from '@shared/types'
 import { Skeleton } from '@/components/ui/skeleton'
+import { cn } from '@/lib/utils'
 import { CoverImage } from './CoverImage'
 
-export function CoverCard({ series }: { series: Series }) {
+export interface GridSelection {
+  selected: Set<number>
+  onToggle: (id: number) => void
+}
+
+export function CoverCard({
+  series,
+  selection
+}: {
+  series: Series
+  selection?: GridSelection | null
+}) {
   const navigate = useNavigate()
+  const checked = selection?.selected.has(series.id) ?? false
   return (
     <button
-      onClick={() => navigate(`/series/${series.id}`)}
+      onClick={() => (selection ? selection.onToggle(series.id) : navigate(`/series/${series.id}`))}
       className="group w-full text-left"
       title={series.title}
     >
-      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-lg bg-muted shadow-sm transition-all duration-200 group-hover:shadow-lg group-hover:ring-2 group-hover:ring-primary/60">
+      <div
+        className={cn(
+          'relative aspect-[3/4] w-full overflow-hidden rounded-lg bg-muted shadow-sm transition-all duration-200',
+          selection
+            ? checked
+              ? 'ring-2 ring-primary'
+              : 'group-hover:ring-2 group-hover:ring-primary/40'
+            : 'group-hover:shadow-lg group-hover:ring-2 group-hover:ring-primary/60'
+        )}
+      >
         <CoverImage
           seriesId={series.id}
           title={series.title}
           className="size-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
         />
+        {selection && (
+          <span
+            className={cn(
+              'absolute right-2 top-2 grid size-6 place-items-center rounded-full border-2 transition-colors',
+              checked
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-white/70 bg-black/40 text-transparent'
+            )}
+          >
+            <Check className="size-4" />
+          </span>
+        )}
         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-2.5 pt-8 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
           <p className="line-clamp-2 text-xs font-medium text-white">{series.title}</p>
         </div>
@@ -52,13 +86,15 @@ interface CoverGridProps {
   series: Series[] | undefined
   loading?: boolean
   emptyHint?: ReactNode
+  /** 批量选择模式：传入后点封面变为切换选中 */
+  selection?: GridSelection | null
 }
 
 const MIN_COL_WIDTH = 172
 const ROW_ESTIMATE = 262
 
 /** 封面墙：按容器宽度定列数，按行虚拟滚动 */
-export function CoverGrid({ series, loading, emptyHint }: CoverGridProps) {
+export function CoverGrid({ series, loading, emptyHint, selection }: CoverGridProps) {
   const parentRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(1200)
 
@@ -111,7 +147,7 @@ export function CoverGrid({ series, loading, emptyHint }: CoverGridProps) {
             >
               {items.slice(row.index * columns, row.index * columns + columns).map((s, i) =>
                 s ? (
-                  <CoverCard key={s.id} series={s} />
+                  <CoverCard key={s.id} series={s} selection={selection} />
                 ) : (
                   <CoverCardSkeleton key={`sk-${i}`} />
                 )

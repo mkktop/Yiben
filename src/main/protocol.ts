@@ -33,7 +33,22 @@ class HttpError extends Error {
 /**
  * 取某话第 index 页的原始字节：云端章节按需下载（散图按页、压缩包整包），本地章节走驱动解包。
  * 供 page 与 page-thumb 两条路由共用。
+ * 同一页的并发请求共享一次读取（双页模式 + 缩略图条 + 预加载会同时打到同一页）。
  */
+const pageInflight = new Map<string, Promise<{ buf: Buffer; name: string }>>()
+
+function readChapterPageDedup(
+  chapterId: number,
+  index: number
+): Promise<{ buf: Buffer; name: string }> {
+  const key = `${chapterId}/${index}`
+  const running = pageInflight.get(key)
+  if (running) return running
+  const task = readChapterPage(chapterId, index).finally(() => pageInflight.delete(key))
+  pageInflight.set(key, task)
+  return task
+}
+
 async function readChapterPage(
   chapterId: number,
   index: number
@@ -45,7 +60,7 @@ async function readChapterPage(
   if (chapter.kind === 'cfolder' || chapter.cloud_file_id) {
     const src = getChapterSource(chapterId)
     const result = await ensureChapterPage(chapterId, index, src?.familyId ?? undefined)
-    return { buf: await readEnsuredPage(result, index), name: result.path }
+    return { buf: await readEnsuredPage(result, index), name: result.name ?? result.path }
   }
 
   const driver = await getDriver(chapter.path, chapter.kind === 'folder')
@@ -86,7 +101,7 @@ export function attachProtocolHandlers(): void {
       }
 
       if (kind === 'page') {
-        const { buf, name } = await readChapterPage(Number(segments[0]), Number(segments[1]))
+        const { buf, name } = await readChapterPageDedup(Number(segments[0]), Number(segments[1]))
         return new Response(new Uint8Array(buf), {
           headers: {
             'content-type': mimeOfImage(name),
@@ -102,7 +117,7 @@ export function attachProtocolHandlers(): void {
         let buf = await readFile(longPath(file)).catch(() => null)
         if (!buf) {
           // 首次请求：取原图后缩小落盘，之后直接命中缓存
-          const page = await readChapterPage(chapterId, index)
+          const page = await readChapterPageDedup(chapterId, index)
           await buildPageThumb(page.buf, chapterId, index)
           buf = await readFile(longPath(file))
         }

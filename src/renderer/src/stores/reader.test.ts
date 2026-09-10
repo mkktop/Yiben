@@ -27,6 +27,22 @@ describe('spreadPages', () => {
     expect(spreadPages(0, 0, true)).toEqual([0])
     expect(spreadPages(3, 0, true)).toEqual([3])
   })
+
+  it('跨页大图单独占一屏，其后重新配对', () => {
+    const wide = [2]
+    // 第 2 页是横跨页：它自己一屏，第 1 页也跟着落单
+    expect(spreadPages(1, 10, false, wide)).toEqual([1])
+    expect(spreadPages(2, 10, false, wide)).toEqual([2])
+    // 跨页之后的配对从下一页重新开始
+    expect(spreadPages(3, 10, false, wide)).toEqual([3, 4])
+    expect(spreadPages(4, 10, false, wide)).toEqual([3, 4])
+    // 不受影响的普通屏照常成对
+    expect(spreadPages(5, 10, false, wide)).toEqual([5, 6])
+  })
+
+  it('rtl 只反转展示顺序，不影响配对', () => {
+    expect(spreadPages(3, 10, true, [2])).toEqual([4, 3])
+  })
 })
 
 describe('翻页步进', () => {
@@ -40,23 +56,43 @@ describe('翻页步进', () => {
     expect(useReaderStore.getState().page).toBe(0)
   })
 
-  // 回归：曾经在 double + rtl（默认方向）下 next 会反向，导致连按右方向键卡在封面
-  it('双页 + 日漫方向仍然能推进', () => {
+  // 回归：曾经在 double + rtl（默认方向）下 next 会反向，导致连按右方向键卡在封面。
+  // 页码语义 = 当前 spread 的起始页：封面 [0] → (1,2) → (3,4) …
+  it('双页 + 日漫方向仍然能推进，封面后进入 (1,2) 屏', () => {
     useReaderStore.getState().patch({ mode: 'double' })
     const visited: number[] = [useReaderStore.getState().page]
     for (let i = 0; i < 5; i++) {
       useReaderStore.getState().next()
       visited.push(useReaderStore.getState().page)
     }
-    expect(visited).toEqual([0, 2, 4, 6, 8, 9])
+    expect(visited).toEqual([0, 1, 3, 5, 7, 9])
   })
 
   it('双页 + 从左往右 与 日漫方向步进一致', () => {
     useReaderStore.getState().patch({ mode: 'double', rtl: false })
     useReaderStore.getState().next()
-    expect(useReaderStore.getState().page).toBe(2)
+    expect(useReaderStore.getState().page).toBe(1)
     useReaderStore.getState().prev()
     expect(useReaderStore.getState().page).toBe(0)
+  })
+
+  it('跨页大图处步长自动变 1，且每屏恰好访问一次', () => {
+    useReaderStore.getState().patch({ mode: 'double' })
+    useReaderStore.getState().setWidePages([5])
+    const visited: number[] = [useReaderStore.getState().page]
+    for (let i = 0; i < 9; i++) {
+      useReaderStore.getState().next()
+      visited.push(useReaderStore.getState().page)
+    }
+    // (1,2)(3,4) [5 单独] (6,7)(8,9)
+    expect(visited).toEqual([0, 1, 3, 5, 6, 8, 9, 9, 9, 9])
+    // 每一屏都覆盖到
+    const spreads = new Set(
+      visited.map((p) =>
+        JSON.stringify(spreadPages(p, 10, false, useReaderStore.getState().widePages))
+      )
+    )
+    expect(spreads.size).toBe(6)
   })
 
   it('不会越过首页', () => {

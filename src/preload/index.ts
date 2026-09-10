@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type { PrefetchDone, PrefetchProgress } from '../shared/types'
 
 const api = {
   libraries: {
@@ -12,12 +13,32 @@ const api = {
     list: (opts?: {
       libraryId?: number
       query?: string
-      filter?: 'all' | 'unread' | 'reading' | 'recent'
+      filter?: 'all' | 'unread' | 'reading' | 'read' | 'recent'
       limit?: number
       offset?: number
     }) => ipcRenderer.invoke('series:list', opts ?? {}),
     get: (id: number) => ipcRenderer.invoke('series:get', id),
-    remove: (id: number) => ipcRenderer.invoke('series:remove', id)
+    remove: (id: number) => ipcRenderer.invoke('series:remove', id),
+    removeMany: (ids: number[]) => ipcRenderer.invoke('series:removeMany', ids),
+    updateMeta: (id: number, patch: Record<string, unknown>) =>
+      ipcRenderer.invoke('series:updateMeta', { id, patch }),
+    rescan: (id: number) => ipcRenderer.invoke('series:rescan', id),
+    markRead: (id: number, read: boolean) =>
+      ipcRenderer.invoke('series:markRead', { id, read }),
+    resetProgress: (id: number) => ipcRenderer.invoke('series:resetProgress', id)
+  },
+  config: {
+    get: (key: string) => ipcRenderer.invoke('config:get', key),
+    set: (key: string, value: unknown) => ipcRenderer.invoke('config:set', { key, value })
+  },
+  bookmarks: {
+    toggle: (chapterId: number, page: number) =>
+      ipcRenderer.invoke('bookmarks:toggle', { chapterId, page }) as Promise<boolean>,
+    list: (seriesId: number) => ipcRenderer.invoke('bookmarks:list', seriesId)
+  },
+  data: {
+    export: () => ipcRenderer.invoke('data:export'),
+    import: () => ipcRenderer.invoke('data:import')
   },
   home: {
     continue: () => ipcRenderer.invoke('home:continue'),
@@ -25,6 +46,20 @@ const api = {
   },
   reader: {
     chapter: (chapterId: number) => ipcRenderer.invoke('reader:chapter', chapterId),
+    /** 同系列前后话（末页自动进下一话 / 手动切换） */
+    neighbors: (chapterId: number) =>
+      ipcRenderer.invoke('reader:neighbors', chapterId) as Promise<{
+        index: number
+        total: number
+        prev: { id: number; title: string; page_count: number } | null
+        next: { id: number; title: string; page_count: number } | null
+      } | null>,
+    /** 页尺寸（双页跨页识别）：立即返回已知记录，缺的页主进程后台探测后经事件推送 */
+    pageDims: (chapterId: number) =>
+      ipcRenderer.invoke('reader:pageDims', chapterId) as Promise<{
+        dims: Array<{ idx: number; w: number; h: number }>
+        probing: boolean
+      }>,
     file: (chapterId: number) => ipcRenderer.invoke('reader:file', chapterId),
     /** PDF 页数回填（渲染进程用 pdfjs 统计后写回主进程） */
     setPageCount: (chapterId: number, pageCount: number) =>
@@ -35,11 +70,20 @@ const api = {
       fit?: 'width' | 'height' | 'original'
       rtl?: boolean
       rotate?: number
-    }) => ipcRenderer.invoke('reader:prefs:set', { seriesId, prefs })
+    }) => ipcRenderer.invoke('reader:prefs:set', { seriesId, prefs }),
+    getDefaults: () => ipcRenderer.invoke('reader:defaults:get'),
+    setDefaults: (prefs: {
+      mode?: 'single' | 'double' | 'webtoon'
+      fit?: 'width' | 'height' | 'original'
+      rtl?: boolean
+      rotate?: number
+    }) => ipcRenderer.invoke('reader:defaults:set', prefs)
   },
   progress: {
     save: (chapterId: number, page: number, completed?: boolean) =>
-      ipcRenderer.invoke('progress:save', { chapterId, page, completed })
+      ipcRenderer.invoke('progress:save', { chapterId, page, completed }),
+    setCompleted: (chapterId: number, completed: boolean) =>
+      ipcRenderer.invoke('progress:setCompleted', { chapterId, completed })
   },
   events: {
     onScanProgress: (cb: (payload: unknown) => void) => {
@@ -68,6 +112,36 @@ const api = {
       return (): void => {
         ipcRenderer.removeListener('chapter:pageCount', listener)
       }
+    },
+    /** 页尺寸探测进度（双页模式跨页识别） */
+    onChapterPageDims: (
+      cb: (payload: { chapterId: number; dims: Array<{ idx: number; w: number; h: number }> }) => void
+    ) => {
+      const listener = (
+        _e: unknown,
+        payload: { chapterId: number; dims: Array<{ idx: number; w: number; h: number }> }
+      ): void => cb(payload)
+      ipcRenderer.on('chapter:pageDims', listener)
+      return (): void => {
+        ipcRenderer.removeListener('chapter:pageDims', listener)
+      }
+    },
+    /** 离线预取进度 */
+    onPrefetchProgress: (cb: (payload: PrefetchProgress) => void) => {
+      const listener = (_e: unknown, payload: PrefetchProgress): void =>
+        cb(payload)
+      ipcRenderer.on('prefetch:progress', listener)
+      return (): void => {
+        ipcRenderer.removeListener('prefetch:progress', listener)
+      }
+    },
+    onPrefetchDone: (cb: (payload: PrefetchDone) => void) => {
+      const listener = (_e: unknown, payload: PrefetchDone): void =>
+        cb(payload)
+      ipcRenderer.on('prefetch:done', listener)
+      return (): void => {
+        ipcRenderer.removeListener('prefetch:done', listener)
+      }
     }
   },
   cloud: {
@@ -87,6 +161,12 @@ const api = {
     cacheClearAll: () => ipcRenderer.invoke('cloud:cacheClearAll') as Promise<{ bytes: number }>,
     cacheClearSeries: (seriesId: number) =>
       ipcRenderer.invoke('cloud:cacheClearSeries', seriesId) as Promise<{ bytes: number }>,
+    prefetch: (seriesId: number) =>
+      ipcRenderer.invoke('cloud:prefetch', seriesId) as Promise<{ seriesId: number; done: number; total: number }>,
+    prefetchCancel: (seriesId: number) =>
+      ipcRenderer.invoke('cloud:prefetchCancel', seriesId) as Promise<boolean>,
+    prefetchRunning: () =>
+      ipcRenderer.invoke('cloud:prefetchRunning') as Promise<number[]>,
     browse: (folderId?: string, familyId?: string) =>
       ipcRenderer.invoke('cloud:browse', { folderId, familyId }),
     addLibrary: (folderId: string, familyId: string | undefined, name: string) =>

@@ -63,6 +63,8 @@ export interface ChapterWithProgress extends Chapter {
 export interface SeriesDetail {
   series: Series
   chapters: ChapterWithProgress[]
+  /** 所属书库类型（云端系列展示「离线缓存」等专属操作） */
+  libraryKind: string
 }
 
 export interface ContinueItem {
@@ -90,7 +92,29 @@ export interface ScanProgress {
   title?: string
 }
 
-export type SeriesFilter = 'all' | 'unread' | 'reading' | 'recent'
+export type SeriesFilter = 'all' | 'unread' | 'reading' | 'read' | 'recent'
+
+/** 跨话书签（阅读器书签面板用） */
+export interface BookmarkInfo {
+  chapter_id: number
+  chapter_title: string
+  page: number
+  created_at: number
+}
+
+/** 整系列离线预取进度（主进程推送） */
+export interface PrefetchProgress {
+  seriesId: number
+  done: number
+  total: number
+  chapterTitle: string
+}
+
+export interface PrefetchDone {
+  seriesId: number
+  cancelled: boolean
+  error?: string
+}
 
 /** 阅读偏好（按系列记忆，存主进程 electron-store） */
 export interface ReaderPrefs {

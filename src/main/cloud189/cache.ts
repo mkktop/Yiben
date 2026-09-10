@@ -25,6 +25,29 @@ let flushChain: Promise<void> = Promise.resolve()
 /** 同一目标的并发下载共用一个 promise，避免重复下载和写同一个文件 */
 const inflight = new Map<string, Promise<string>>()
 
+/** 全局并发下载上限：快速翻页/预取时不会同时开几十条连接挤爆带宽 */
+const MAX_CONCURRENT_DOWNLOADS = 3
+let activeDownloads = 0
+const downloadQueue: Array<() => void> = []
+
+async function withDownloadSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
+    await new Promise<void>((resolve) => downloadQueue.push(resolve))
+  } else {
+    activeDownloads++
+  }
+  try {
+    return await fn()
+  } finally {
+    activeDownloads--
+    const next = downloadQueue.shift()
+    if (next) {
+      activeDownloads++
+      next()
+    }
+  }
+}
+
 function indexPath(): string {
   return join(cloudCacheDir(), 'index.json')
 }
@@ -178,32 +201,34 @@ async function download(
 
   await mkdir(longPath(dirname(destPath)), { recursive: true })
 
-  const url = await cloudDownloadUrl(fileId, familyId)
-  const resp = await fetch(url)
-  if (!resp.ok || !resp.body) throw new Error(`云盘下载失败：HTTP ${resp.status}`)
-
-  const total = Number(resp.headers.get('content-length') ?? expectedSize ?? 0)
   let loaded = 0
-  const tmp = `${destPath}.part`
-  try {
-    await pipeline(
-      Readable.fromWeb(resp.body),
-      // 透传式统计进度；pipeline 负责背压，磁盘慢时不会把整个文件堆在内存里
-      async function* (source: AsyncIterable<Buffer>) {
-        for await (const chunk of source) {
-          loaded += chunk.length
-          onProgress?.({ fileId, name: basename(destPath), loaded, total })
-          yield chunk
-        }
-      },
-      createWriteStream(longPath(tmp))
-    )
-    // 下载完成才改名，残缺文件不会被当作缓存命中
-    await rename(longPath(tmp), longPath(destPath))
-  } catch (err) {
-    await rm(longPath(tmp), { force: true }).catch(() => {})
-    throw err
-  }
+  await withDownloadSlot(async () => {
+    const url = await cloudDownloadUrl(fileId, familyId)
+    const resp = await fetch(url)
+    if (!resp.ok || !resp.body) throw new Error(`云盘下载失败：HTTP ${resp.status}`)
+
+    const total = Number(resp.headers.get('content-length') ?? expectedSize ?? 0)
+    const tmp = `${destPath}.part`
+    try {
+      await pipeline(
+        Readable.fromWeb(resp.body),
+        // 透传式统计进度；pipeline 负责背压，磁盘慢时不会把整个文件堆在内存里
+        async function* (source: AsyncIterable<Buffer>) {
+          for await (const chunk of source) {
+            loaded += chunk.length
+            onProgress?.({ fileId, name: basename(destPath), loaded, total })
+            yield chunk
+          }
+        },
+        createWriteStream(longPath(tmp))
+      )
+      // 下载完成才改名，残缺文件不会被当作缓存命中
+      await rename(longPath(tmp), longPath(destPath))
+    } catch (err) {
+      await rm(longPath(tmp), { force: true }).catch(() => {})
+      throw err
+    }
+  })
 
   index[destPath] = { size: loaded, at: Date.now() }
   await evict(index, destPath)

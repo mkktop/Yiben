@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
-import { HardDrive, Loader2, Save, Trash2 } from 'lucide-react'
+import {
+  Download,
+  HardDrive,
+  Loader2,
+  Save,
+  Trash2,
+  Upload
+} from 'lucide-react'
 import { useThemeStore } from '@/stores/theme'
+import { useDataStore } from '@/stores/data'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { cn } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
+import type { ReaderPrefs } from '@shared/types'
 
 function fmtBytes(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
@@ -15,6 +24,239 @@ interface SeriesCache {
   seriesId: number
   title: string
   bytes: number
+}
+
+/** 开关行：标题 + 描述 + 右侧开关 */
+function ToggleRow({
+  title,
+  desc,
+  checked,
+  onChange
+}: {
+  title: string
+  desc: string
+  checked: boolean
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div>
+        <p className="text-sm font-medium">{title}</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">{desc}</p>
+      </div>
+      <button
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className={cn(
+          'relative h-6 w-11 shrink-0 rounded-full transition-colors',
+          checked ? 'bg-primary' : 'bg-muted'
+        )}
+      >
+        <span
+          className={cn(
+            'absolute top-0.5 size-5 rounded-full bg-white shadow transition-all',
+            checked ? 'left-[22px]' : 'left-0.5'
+          )}
+        />
+      </button>
+    </div>
+  )
+}
+
+/** 新书打开时的默认阅读方式（按系列记忆的偏好优先级更高） */
+function ReaderDefaultsSection() {
+  const [defaults, setDefaults] = useState<ReaderPrefs>({})
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    void window.yiben.reader.getDefaults().then(setDefaults)
+  }, [])
+
+  const patch = (p: ReaderPrefs): void => {
+    void window.yiben.reader.setDefaults(p).then((merged) => {
+      setDefaults(merged)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 1500)
+    })
+  }
+
+  const mode = defaults.mode ?? 'single'
+  const fit = defaults.fit ?? 'width'
+  const rtl = defaults.rtl ?? true
+
+  return (
+    <section>
+      <h2 className="mb-4 text-sm font-medium text-muted-foreground">阅读</h2>
+      <div className="space-y-5 rounded-xl border p-5">
+        <ChoiceRow
+          label="翻页模式"
+          options={[
+            { key: 'single', label: '单页' },
+            { key: 'double', label: '双页' },
+            { key: 'webtoon', label: '条漫' }
+          ]}
+          value={mode}
+          onChange={(v) => patch({ mode: v as ReaderPrefs['mode'] })}
+        />
+        <ChoiceRow
+          label="页面适配"
+          options={[
+            { key: 'width', label: '适宽' },
+            { key: 'height', label: '适高' },
+            { key: 'original', label: '原始' }
+          ]}
+          value={fit}
+          onChange={(v) => patch({ fit: v as ReaderPrefs['fit'] })}
+        />
+        <ToggleRow
+          title="日漫方向（从右往左）"
+          desc="双页模式按日漫习惯从右往左翻；西漫可关闭"
+          checked={rtl}
+          onChange={(v) => patch({ rtl: v })}
+        />
+        <p className="text-xs text-muted-foreground">
+          只影响还没单独设置过的漫画；在阅读器里改过的设置按系列记忆并优先生效。
+          {saved ? ' 已保存 ✓' : ''}
+        </p>
+      </div>
+    </section>
+  )
+}
+
+function ChoiceRow({
+  label,
+  options,
+  value,
+  onChange
+}: {
+  label: string
+  options: Array<{ key: string; label: string }>
+  value: string
+  onChange: (key: string) => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <span className="text-sm font-medium">{label}</span>
+      <div className="flex gap-1 rounded-lg bg-muted p-1">
+        {options.map((o) => (
+          <button
+            key={o.key}
+            onClick={() => onChange(o.key)}
+            className={cn(
+              'rounded-md px-3 py-1 text-xs transition-colors',
+              value === o.key
+                ? 'bg-background font-medium shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** 通用开关：本地库自动重扫、启动恢复上次阅读 */
+function GeneralSection() {
+  const [autoRescan, setAutoRescan] = useState(true)
+  const [resume, setResume] = useState(true)
+
+  useEffect(() => {
+    void window.yiben.config.get('autoRescan').then((v) => setAutoRescan(v !== false))
+    void window.yiben.config.get('resumeOnLaunch').then((v) => setResume(v !== false))
+  }, [])
+
+  return (
+    <section>
+      <h2 className="mb-4 text-sm font-medium text-muted-foreground">通用</h2>
+      <div className="space-y-4 rounded-xl border p-5">
+        <ToggleRow
+          title="书库文件变动自动重扫"
+          desc="往本地书库文件夹里加/删漫画后自动增量更新书架（约 5 秒延迟）"
+          checked={autoRescan}
+          onChange={(v) => {
+            setAutoRescan(v)
+            void window.yiben.config.set('autoRescan', v).catch(() => {})
+          }}
+        />
+        <ToggleRow
+          title="启动时打开上次阅读"
+          desc="打开一本 Yiben 后直接回到上次读到的位置"
+          checked={resume}
+          onChange={(v) => {
+            setResume(v)
+            void window.yiben.config.set('resumeOnLaunch', v).catch(() => {})
+          }}
+        />
+      </div>
+    </section>
+  )
+}
+
+/** 阅读进度与书签的导出/导入（JSON，跨设备按目录路径对账） */
+function DataSection() {
+  const bump = useDataStore((s) => s.bump)
+  const [busy, setBusy] = useState<'export' | 'import' | null>(null)
+  const [message, setMessage] = useState('')
+
+  const doExport = (): void => {
+    setBusy('export')
+    setMessage('')
+    void window.yiben.data
+      .export()
+      .then((r) => {
+        if (r) setMessage(`已导出 ${r.series} 个系列（${r.progress} 条进度、${r.bookmarks} 个书签）`)
+      })
+      .catch((e) => setMessage(errorMessage(e)))
+      .finally(() => setBusy(null))
+  }
+
+  const doImport = (): void => {
+    setBusy('import')
+    setMessage('')
+    void window.yiben.data
+      .import()
+      .then((r) => {
+        if (r) {
+          setMessage(
+            `导入完成：匹配 ${r.matched}/${r.series} 个系列，合入 ${r.progress} 条进度、${r.bookmarks} 个书签` +
+              (r.skipped > 0 ? `；${r.skipped} 条因找不到对应漫画被跳过` : '')
+          )
+          bump()
+        }
+      })
+      .catch((e) => setMessage(errorMessage(e)))
+      .finally(() => setBusy(null))
+  }
+
+  return (
+    <section>
+      <h2 className="mb-4 text-sm font-medium text-muted-foreground">数据</h2>
+      <div className="rounded-xl border p-5">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium">备份阅读进度</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              导出全部进度与书签为 JSON；导入时按漫画目录路径对账，较新的进度才会覆盖
+            </p>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <Button size="sm" variant="outline" disabled={busy !== null} onClick={doExport}>
+              {busy === 'export' ? <Loader2 className="animate-spin" /> : <Download />}
+              导出
+            </Button>
+            <Button size="sm" variant="outline" disabled={busy !== null} onClick={doImport}>
+              {busy === 'import' ? <Loader2 className="animate-spin" /> : <Upload />}
+              导入
+            </Button>
+          </div>
+        </div>
+        {message && <p className="mt-3 text-xs text-muted-foreground">{message}</p>}
+      </div>
+    </section>
+  )
 }
 
 function CloudCacheSection() {
@@ -207,10 +449,12 @@ export function SettingsPage() {
             </button>
           ))}
         </div>
-        <p className="mt-3 text-xs text-muted-foreground">强调色系统将在 M5 提供</p>
       </section>
 
+      <ReaderDefaultsSection />
+      <GeneralSection />
       <CloudCacheSection />
+      <DataSection />
     </div>
   )
 }

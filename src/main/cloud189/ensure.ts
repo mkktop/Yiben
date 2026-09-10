@@ -4,22 +4,28 @@ import { join } from 'path'
 import { getChapter, getChapterPageFile, getChapterSource, updateChapterPageCount } from '../db'
 import { getDriver } from '../archives'
 import { withDriver } from '../archives'
+import { RangeUnsupportedError } from '../archives/remoteZip'
 import { cloudCacheDir, waitCloudReady } from './client'
 import { ensureCached } from './cache'
+import { dropRemoteZip, getRemoteZip } from './remoteZipManager'
 import { broadcast } from '../events'
-import { longPath } from '../util/paths'
+import { archiveKindOf, longPath } from '../util/paths'
 
 export interface EnsureResult {
-  /** 本地可读路径（缓存文件或缓存目录） */
+  chapterId: number
+  /** 本地可读路径（缓存文件/缓存目录），或云端 zip 的远程直读标记路径 */
   path: string
   kind: string
   pageCount: number
+  /** 远程直读时用于 content-type 的真实页名 */
+  name?: string
 }
 
 /**
  * 确保某一页可读：
  *  - 云端散图章节：按页下载（只取当前页）
- *  - 云端压缩包章节：整包下载（首次打开时），并补齐 page_count
+ *  - 云端 zip 压缩包：直链支持 Range 时远程直读（零下载秒开），否则整包下载
+ *  - 云端 PDF / 其他压缩包：整包下载；PDF 页数由渲染进程回填
  *  - 本地章节：原样返回
  */
 export async function ensureChapterPage(
@@ -37,12 +43,34 @@ export async function ensureChapterPage(
     if (!page) throw new Error(`页码越界：${pageIndex}`)
     const dest = join(cloudCacheDir(), `f-${chapterId}`, `${String(pageIndex).padStart(5, '0')}-${page.name}`)
     await ensureCached(page.file_id, familyId, dest, page.size)
-    return { path: dest, kind: 'file', pageCount: ch.page_count }
+    return { chapterId, path: dest, kind: 'file', pageCount: ch.page_count }
   }
 
   if (ch.cloud_file_id) {
-    // 云端压缩包/PDF：首次访问整包下载到缓存
     if (!existsSync(longPath(ch.path))) {
+      // 云端 zip：探测 Range 直读，失败（不支持/目录解析不出）回退整包下载
+      if (archiveKindOf(ch.path) === 'zip') {
+        try {
+          const zip = await getRemoteZip(chapterId, ch.cloud_file_id, familyId, ch.size)
+          let pageCount = ch.page_count
+          if (pageCount === 0 && zip.pageCount > 0) {
+            pageCount = zip.pageCount
+            updateChapterPageCount(chapterId, pageCount)
+            // 渲染进程打开章节时拿到的是旧值 0，必须推一次，否则页码钳位会失效
+            broadcast('chapter:pageCount', { chapterId, pageCount })
+          }
+          const name = zip.listPages()[pageIndex]?.name
+          return { chapterId, path: ch.path, kind: 'remotezip', pageCount, name }
+        } catch (err) {
+          dropRemoteZip(chapterId)
+          if (!(err instanceof RangeUnsupportedError)) {
+            console.warn(
+              '[ensure] Range 直读失败，回退整包下载:',
+              err instanceof Error ? err.message : err
+            )
+          }
+        }
+      }
       await ensureCached(ch.cloud_file_id, familyId, ch.path, ch.size)
     }
     let pageCount = ch.page_count
@@ -53,15 +81,15 @@ export async function ensureChapterPage(
       // 渲染进程打开章节时拿到的是旧值 0，必须推一次，否则页码钳位会失效
       broadcast('chapter:pageCount', { chapterId, pageCount })
     }
-    return { path: ch.path, kind: ch.kind, pageCount }
+    return { chapterId, path: ch.path, kind: ch.kind, pageCount }
   }
 
-  return { path: ch.path, kind: ch.kind, pageCount: ch.page_count }
+  return { chapterId, path: ch.path, kind: ch.kind, pageCount: ch.page_count }
 }
 
 /**
- * 确保章节的本地路径可读（PDF 渲染、整包访问等场景）：
- * 云端压缩包/PDF 在文件未缓存时触发整包下载，本地章节原样返回。
+ * 确保章节的本地路径可读（PDF 渲染、整包访问、离线预取等场景）：
+ * 云端压缩包/PDF 在文件未缓存时触发整包下载（Range 直读不落盘，这里不走），本地章节原样返回。
  */
 export async function ensureLocalChapterPath(chapterId: number): Promise<string> {
   const ch = getChapter(chapterId)
@@ -69,6 +97,11 @@ export async function ensureLocalChapterPath(chapterId: number): Promise<string>
   if (existsSync(longPath(ch.path))) return ch.path
   const src = getChapterSource(chapterId)
   if (src?.libraryKind !== 'cloud189') return ch.path
+  if (ch.cloud_file_id) {
+    await waitCloudReady()
+    await ensureCached(ch.cloud_file_id, src.familyId ?? undefined, ch.path, ch.size)
+    return ch.path
+  }
   const result = await ensureChapterPage(chapterId, 0, src.familyId ?? undefined)
   return result.path
 }
@@ -76,6 +109,18 @@ export async function ensureLocalChapterPath(chapterId: number): Promise<string>
 /** 读取已确保存在的页（协议层调用） */
 export async function readEnsuredPage(result: EnsureResult, pageIndex: number): Promise<Buffer> {
   if (result.kind === 'file') return readFile(result.path)
+  if (result.kind === 'remotezip') {
+    const ch = getChapter(result.chapterId)
+    if (!ch?.cloud_file_id) throw new Error(`章节缺少云端文件 id：${result.chapterId}`)
+    const src = getChapterSource(result.chapterId)
+    const zip = await getRemoteZip(
+      result.chapterId,
+      ch.cloud_file_id,
+      src?.familyId ?? undefined,
+      ch.size
+    )
+    return zip.readPage(pageIndex)
+  }
   const driver = await getDriver(result.path, result.kind === 'folder')
   return driver.readPage(pageIndex)
 }
