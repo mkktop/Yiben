@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { spreadPages, useReaderStore } from './reader'
+import { atLastScreen, spreadPages, useReaderStore } from './reader'
 
 /** 把 store 初始化成指定页数/起始页（prefs 用默认值） */
 function setup(pageCount: number, startPage = 0): void {
@@ -131,5 +131,31 @@ describe('页数未知（页面回填前）', () => {
     useReaderStore.setState({ pageCount: 5 })
     s.setPage(useReaderStore.getState().page)
     expect(useReaderStore.getState().page).toBe(4)
+  })
+})
+
+describe('atLastScreen（读完进下一话的边界）', () => {
+  it('单页/条漫按 page 判定', () => {
+    expect(atLastScreen(8, 9, 'single')).toBe(true)
+    expect(atLastScreen(7, 9, 'single')).toBe(false)
+    expect(atLastScreen(8, 9, 'webtoon')).toBe(true)
+  })
+
+  // 回归：双页模式 7 页的最后一屏是 (5,6)，旧判定 page>=6 会先单独重复展示第 7 页
+  it('双页模式最后一屏是两页时也算读完', () => {
+    expect(atLastScreen(5, 7, 'double')).toBe(true)
+    expect(atLastScreen(6, 7, 'double')).toBe(true)
+    expect(atLastScreen(3, 7, 'double')).toBe(false)
+  })
+
+  it('跨页大图单独成屏不影响末屏判定', () => {
+    expect(atLastScreen(8, 9, 'double', [8])).toBe(true)
+    expect(atLastScreen(9, 10, 'double', [8])).toBe(true)
+    expect(atLastScreen(7, 10, 'double', [8])).toBe(false)
+  })
+
+  it('页数未知（云端压缩包未回填）时不判定读完', () => {
+    expect(atLastScreen(0, 0, 'single')).toBe(false)
+    expect(atLastScreen(99, 0, 'double')).toBe(false)
   })
 })

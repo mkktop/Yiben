@@ -5,7 +5,7 @@ import { usePagePreload } from './usePagePreload'
 import { ImageViewer, WebtoonViewer } from './ImageViewer'
 import { PdfViewer } from './PdfViewer'
 import { ReaderChrome } from './ReaderChrome'
-import { useReaderStore, type ReaderMode } from '@/stores/reader'
+import { useReaderStore, atLastScreen, type ReaderMode } from '@/stores/reader'
 import { useDataStore } from '@/stores/data'
 import type { BookmarkInfo, ReaderChapterInfo } from '@shared/types'
 
@@ -132,11 +132,10 @@ export function ReaderPage() {
     [navigate]
   )
 
-  /** 越界感知的下一页：末页进下一话 */
+  /** 越界感知的下一页：当前屏已含末页时进下一话（双页模式最后一屏可能是两页） */
   const goNext = useCallback(() => {
     const s = useReaderStore.getState()
-    const atEnd = s.pageCount > 0 && s.page >= s.pageCount - 1
-    if (atEnd && neighborsRef.current?.next) {
+    if (atLastScreen(s.page, s.pageCount, s.mode, s.widePages) && neighborsRef.current?.next) {
       openChapter(neighborsRef.current.next.id)
       return
     }
@@ -151,6 +150,16 @@ export function ReaderPage() {
       return
     }
     s.prev()
+  }, [openChapter])
+
+  /** 显式跳话（顶栏按钮/末页卡片）：不管当前读到哪，直接进前后话 */
+  const goNextChapter = useCallback(() => {
+    const n = neighborsRef.current?.next
+    if (n) openChapter(n.id)
+  }, [openChapter])
+  const goPrevChapter = useCallback(() => {
+    const n = neighborsRef.current?.prev
+    if (n) openChapter(n.id)
   }, [openChapter])
 
   const neighborsRef = useRef<Neighbors | null>(null)
@@ -430,10 +439,9 @@ export function ReaderPage() {
         isFullscreen={isFullscreen}
         toggleFullscreen={toggleFullscreen}
         onModeChange={onModeChange}
-        onNext={goNext}
-        onPrev={goPrev}
-        neighbors={neighbors}
-        bookmarks={bookmarks}
+        onNextChapter={goNextChapter}
+        onPrevChapter={goPrevChapter}
+        neighbors={neighbors}        bookmarks={bookmarks}
         isBookmarked={isBookmarked}
         onToggleBookmark={toggleBookmark}
         onJump={jumpTo}

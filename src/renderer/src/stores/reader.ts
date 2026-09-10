@@ -99,6 +99,21 @@ function clampPage(page: number, pageCount: number): number {
 }
 
 /**
+ * 当前屏是否已含末页（用于「读完进下一话」的边界判定）。
+ * 双页模式最后一屏可能是 (n-2, n-1) 两页，按 spread 的最大页判定而不是 page 本身。
+ */
+export function atLastScreen(
+  page: number,
+  pageCount: number,
+  mode: ReaderMode,
+  widePages: number[] = []
+): boolean {
+  if (pageCount <= 0) return false
+  if (mode !== 'double') return page >= pageCount - 1
+  return Math.max(...spreadPages(page, pageCount, false, widePages)) >= pageCount - 1
+}
+
+/**
  * double 模式下当前 spread 展示的页索引数组（rtl 只决定返回数组内的左右顺序）。
  * 约定：第 0 页（封面）单独展示，之后按阅读顺序两两配对；
  * wide 中的跨页大图单独占一屏，它后面的配对从下一页重新开始。

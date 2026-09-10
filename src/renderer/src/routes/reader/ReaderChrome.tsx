@@ -15,7 +15,7 @@ import {
   X,
   type LucideIcon
 } from 'lucide-react'
-import { useReaderStore, spreadPages, type ReaderMode } from '@/stores/reader'
+import { useReaderStore, spreadPages, atLastScreen, type ReaderMode } from '@/stores/reader'
 import { pageThumbUrl, type BookmarkInfo } from '@shared/types'
 import { cn } from '@/lib/utils'
 
@@ -34,9 +34,9 @@ export interface ReaderChromeProps {
   isFullscreen: boolean
   toggleFullscreen: () => void
   onModeChange: (m: ReaderMode) => void
-  /** 越界感知的翻页：末页进下一话、首页回上一话 */
-  onNext: () => void
-  onPrev: () => void
+  /** 直接跳前后话（顶栏按钮/末页卡片用） */
+  onNextChapter: () => void
+  onPrevChapter: () => void
   neighbors: { index: number; total: number; prev: NeighborChapter | null; next: NeighborChapter | null } | null
   bookmarks: BookmarkInfo[]
   isBookmarked: boolean
@@ -64,8 +64,8 @@ export function ReaderChrome({
   isFullscreen,
   toggleFullscreen,
   onModeChange,
-  onNext,
-  onPrev,
+  onNextChapter,
+  onPrevChapter,
   neighbors,
   bookmarks,
   isBookmarked,
@@ -97,7 +97,8 @@ export function ReaderChrome({
     mode === 'webtoon' || lo === hi
       ? `${page + 1} / ${pageCount}`
       : `${lo}-${hi} / ${pageCount}`
-  const atEnd = pageCount > 0 && page >= pageCount - 1
+  // 与 ReaderPage.goNext 的边界判定共用同一函数：末页卡片出现的时机 = 翻页会进下一话的时机
+  const atEnd = atLastScreen(page, pageCount, mode, widePages)
 
   return (
     <>
@@ -116,9 +117,9 @@ export function ReaderChrome({
         >
           <ArrowLeft className="size-4" />
         </button>
-        {/* 跨话导航 */}
+        {/* 跨话导航：直接跳前后话，与翻页无关 */}
         <button
-          onClick={onPrev}
+          onClick={onPrevChapter}
           disabled={!neighbors?.prev}
           className="grid size-8 place-items-center rounded-md hover:bg-white/10 disabled:opacity-25"
           title={neighbors?.prev ? `上一话：${neighbors.prev.title}` : '没有上一话'}
@@ -126,7 +127,7 @@ export function ReaderChrome({
           <ChevronLeft className="size-4" />
         </button>
         <button
-          onClick={onNext}
+          onClick={onNextChapter}
           disabled={!neighbors?.next}
           className="grid size-8 place-items-center rounded-md hover:bg-white/10 disabled:opacity-25"
           title={neighbors?.next ? `下一话：${neighbors.next.title}` : '没有下一话'}
@@ -218,10 +219,10 @@ export function ReaderChrome({
         ))}
       </div>
 
-      {/* 末页提示卡：手动进下一话（键盘/点击继续翻页也会自动进入） */}
+      {/* 末页提示卡：直接进下一话（键盘/点击继续翻页也会自动进入） */}
       {atEnd && neighbors?.next && (
         <button
-          onClick={onNext}
+          onClick={onNextChapter}
           className={cn(
             'absolute bottom-8 left-1/2 z-20 flex -translate-x-1/2 items-center gap-3 rounded-xl px-5 py-3 text-sm shadow-2xl transition-all',
             'border border-white/10 bg-black/70 text-white backdrop-blur hover:bg-black/85'
