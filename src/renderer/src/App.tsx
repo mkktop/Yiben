@@ -23,7 +23,8 @@ function LaunchResume() {
         // 用户（或调试钩子）已经开始导航时不抢跳
         const hash = window.location.hash
         if (hash && hash !== '#/' && hash !== '#') return
-        navigate(`/reader/${list[0].chapter_id}`, { replace: true })
+        // 必须 push 而不是 replace：主页要留在历史栈底，阅读器的「返回/Esc」才能回到主页
+        navigate(`/reader/${list[0].chapter_id}`)
       } catch {
         /* 配置不可读时按默认（首页）进入 */
       }
