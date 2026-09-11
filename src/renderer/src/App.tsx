@@ -9,9 +9,35 @@ import { SeriesPage } from './routes/SeriesPage'
 import { ReaderPage } from './routes/reader/ReaderPage'
 import { SettingsPage } from './routes/SettingsPage'
 import { CloudPage } from './routes/CloudPage'
+import { useUpdateStore } from './stores/update'
 
 /** 每次应用会话只自动恢复一次：effect 因任何原因重跑（StrictMode/HMR）都不再二次推入 */
 let resumedInSession = false
+
+/** 每次应用会话只自动检查一次更新（同上，避免 StrictMode/HMR 重复请求） */
+let updateCheckedInSession = false
+
+/** 启动自动检查更新：结果只进 store（侧边栏/设置页展示），不打断用户；
+ *  dev 模式主进程直接回 dev 状态，不会真的访问网络 */
+function UpdateBootstrap() {
+  const init = useUpdateStore((s) => s.init)
+  const check = useUpdateStore((s) => s.check)
+  useEffect(() => {
+    void init()
+    if (updateCheckedInSession) return
+    updateCheckedInSession = true
+    void (async () => {
+      try {
+        const enabled = await window.yiben.config.get('autoCheckUpdate')
+        if (enabled === false) return
+        await check()
+      } catch {
+        /* 配置不可读/网络失败都不影响启动 */
+      }
+    })()
+  }, [init, check])
+  return null
+}
 
 /** 启动恢复：开了开关且有阅读记录时，直接回到上次读到的位置 */
 function LaunchResume() {
@@ -46,6 +72,7 @@ export default function App() {
   return (
     <HashRouter>
       <LaunchResume />
+      <UpdateBootstrap />
       <Routes>
         <Route element={<AppShell />}>
           <Route path="/" element={<HomePage />} />

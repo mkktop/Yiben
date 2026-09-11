@@ -58,6 +58,36 @@ const api = {
     continue: () => ipcRenderer.invoke('home:continue'),
     recent: () => ipcRenderer.invoke('home:recent')
   },
+  updater: {
+    appVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
+    check: (): Promise<{
+      status: 'dev' | 'busy' | 'available' | 'latest' | 'error'
+      current: string
+      version?: string
+      notes?: string
+      error?: string
+    }> => ipcRenderer.invoke('app:check-update'),
+    download: (): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('app:download-update'),
+    install: (): Promise<void> => ipcRenderer.invoke('app:install-update'),
+    /** renderer 重载后恢复：是否有已下载待安装的版本 */
+    state: (): Promise<{ ready: string; downloading: boolean }> =>
+      ipcRenderer.invoke('app:update-state'),
+    onProgress: (cb: (percent: number) => void) => {
+      const listener = (_e: unknown, percent: number): void => cb(percent)
+      ipcRenderer.on('app:update-progress', listener)
+      return (): void => {
+        ipcRenderer.removeListener('app:update-progress', listener)
+      }
+    },
+    onReady: (cb: (version: string) => void) => {
+      const listener = (_e: unknown, version: string): void => cb(version)
+      ipcRenderer.on('app:update-ready', listener)
+      return (): void => {
+        ipcRenderer.removeListener('app:update-ready', listener)
+      }
+    }
+  },
   reader: {
     chapter: (chapterId: number) => ipcRenderer.invoke('reader:chapter', chapterId),
     /** 同系列前后话（末页自动进下一话 / 手动切换） */

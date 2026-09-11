@@ -3,12 +3,15 @@ import {
   Download,
   HardDrive,
   Loader2,
+  RefreshCw,
+  RotateCcw,
   Save,
   Trash2,
   Upload
 } from 'lucide-react'
 import { useThemeStore } from '@/stores/theme'
 import { useDataStore } from '@/stores/data'
+import { useUpdateStore } from '@/stores/update'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn, errorMessage } from '@/lib/utils'
@@ -418,6 +421,121 @@ function CloudCacheSection() {
   )
 }
 
+/** 应用更新：检查 -> 下载（进度）-> 立即重启。发布渠道 GitHub Releases（仅打包版） */
+function UpdateSection() {
+  const u = useUpdateStore()
+  const [autoCheck, setAutoCheck] = useState(true)
+
+  useEffect(() => {
+    void window.yiben.config.get('autoCheckUpdate').then((v) => setAutoCheck(v !== false))
+  }, [])
+
+  // 仅 available 状态下 version 才有效——latest 时后端也回传版本号(=当前版)，不能据此显示下载按钮
+  const canDownload = u.status === 'available' && !u.ready
+  const msg = (() => {
+    if (u.ready) return `新版本 v${u.ready} 已下载完成，点击「立即重启」生效`
+    if (u.downloading) return '正在下载更新…（完成后可点击「立即重启」）'
+    if (u.error) return u.status === 'error' ? `检查失败：${u.error}（请检查网络后重试）` : `下载失败：${u.error}`
+    if (u.status === 'dev') return '开发模式不检查更新（打包版自动检查 GitHub Releases）'
+    if (u.status === 'available')
+      return `发现新版本 v${u.version}，点击「下载更新」获取（全量安装包）`
+    if (u.status === 'latest') return `已是最新版本（v${u.current}）`
+    return ''
+  })()
+
+  return (
+    <section>
+      <h2 className="mb-4 text-sm font-medium text-muted-foreground">关于与更新</h2>
+      <div className="space-y-5 rounded-xl border p-5">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="grid size-10 place-items-center rounded-lg bg-primary/10">
+              <RefreshCw className={cn('size-5 text-primary', u.checking && 'animate-spin')} />
+            </div>
+            <div>
+              <p className="text-sm font-medium">
+                一本 Yiben
+                <span className="ml-2 text-xs text-muted-foreground">v{u.current || '…'}</span>
+                {canDownload && (
+                  <span className="ml-2 rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
+                    可更新 v{u.version}
+                  </span>
+                )}
+                {u.ready && (
+                  <span className="ml-2 rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
+                    v{u.ready} 已就绪
+                  </span>
+                )}
+              </p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                发布渠道 GitHub Releases，仅打包版支持在线升级
+              </p>
+            </div>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={u.checking || u.downloading}
+              onClick={() => void u.check()}
+            >
+              {u.checking ? <Loader2 className="animate-spin" /> : <RefreshCw className="size-3.5" />}
+              检查更新
+            </Button>
+            {canDownload && (
+              <Button size="sm" disabled={u.downloading} onClick={() => void u.download()}>
+                {u.downloading ? <Loader2 className="animate-spin" /> : <Download className="size-3.5" />}
+                下载更新 v{u.version}
+              </Button>
+            )}
+            {u.ready && (
+              <Button size="sm" onClick={u.install}>
+                <RotateCcw className="size-3.5" />
+                立即重启 v{u.ready}
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {u.downloading && (
+          <div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-primary transition-all"
+                style={{ width: `${Math.min(100, Math.max(0, u.percent))}%` }}
+              />
+            </div>
+            <p className="mt-1.5 text-xs text-muted-foreground">正在下载更新… {u.percent}%</p>
+          </div>
+        )}
+
+        {msg && <p className="text-xs text-muted-foreground">{msg}</p>}
+
+        {canDownload && u.notes && (
+          <details className="rounded-lg border px-3 py-2">
+            <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground hover:text-foreground">
+              更新内容
+            </summary>
+            <pre className="mt-2 whitespace-pre-wrap font-sans text-xs leading-relaxed text-muted-foreground">
+              {u.notes}
+            </pre>
+          </details>
+        )}
+
+        <ToggleRow
+          title="启动时自动检查更新"
+          desc="有新版本时在侧边栏版本号旁提示，不会自动下载"
+          checked={autoCheck}
+          onChange={(v) => {
+            setAutoCheck(v)
+            void window.yiben.config.set('autoCheckUpdate', v).catch(() => {})
+          }}
+        />
+      </div>
+    </section>
+  )
+}
+
 export function SettingsPage() {
   const { mode, setMode } = useThemeStore()
 
@@ -455,6 +573,7 @@ export function SettingsPage() {
       <GeneralSection />
       <CloudCacheSection />
       <DataSection />
+      <UpdateSection />
     </div>
   )
 }

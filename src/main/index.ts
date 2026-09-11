@@ -9,6 +9,7 @@ import { broadcast } from './events'
 import { runSelfTest } from './selftest'
 import { getSetting, setSetting } from './settings'
 import { startWatchers } from './watcher'
+import { setupAutoUpdate } from './updater'
 
 // 必须在 app ready 之前注册自定义协议
 registerProtocol()
@@ -147,6 +148,8 @@ app.whenReady().then(() => {
   openDb()
   attachProtocolHandlers()
   registerIpc()
+  // 打包版挂 electron-updater 监听（进度/就绪广播）；dev 下是空操作
+  setupAutoUpdate()
 
   // 本地库文件监听（可在设置里关闭）；自测模式不启动
   if (!process.env['YIBEN_SELFTEST'] && getSetting('autoRescan', true)) startWatchers()

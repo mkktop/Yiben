@@ -1,0 +1,66 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # 版本号两方一致性：tag 与 package.json 必须对齐，错位时 latest.yml 的版本
+      # 与安装包名不符 → electron-updater 永远报"已是最新"或拿错安装包
+      - name: 版本一致性校验
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v',''
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          Write-Host "tag=$tag package.json=$pkg"
+          if ($tag -ne $pkg) {
+            Write-Host "::error::版本号不一致：tag=$tag package.json=$pkg（两处改成同一版本再打 tag）"
+            exit 1
+          }
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      # 发布门禁：类型检查 + 单元测试不过不出安装包
+      - name: 类型检查 + 单元测试
+        run: |
+          pnpm typecheck
+          pnpm test
+
+      # pnpm dist = electron-vite build + electron-builder --win nsis --publish never
+      # （不上传，资产由 softprops 统一上传；app-update.yml 仍会随包生成）
+      - name: 构建并打安装包
+        run: pnpm dist
+
+      # 预览版（tag 含 -preview.N）：Release 标记 prerelease——稳定通道客户端
+      # 天然排除 prerelease。只传 exe + latest.yml（差分下载已禁用，无需 blockmap；
+      # *.yml 通配会把 builder-debug.yml 一并传上 Release）
+      - name: 上传到 GitHub Release（正文取自仓库根 RELEASE_NOTES.md）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-preview.') }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/Yiben_*_setup.exe
+            dist/latest.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

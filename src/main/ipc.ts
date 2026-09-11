@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { readFile } from 'fs/promises'
 import {
   addLibrary,
@@ -51,6 +51,7 @@ import { cancelPrefetch, prefetchRunning, startPrefetch } from './cloud189/prefe
 import { ensureLocalChapterPath } from './cloud189/ensure'
 import { ensurePageDims } from './pageDims'
 import { exportData, importData } from './dataTransfer'
+import { checkUpdate, downloadUpdate, installUpdate, updateState } from './updater'
 import { startWatchers, stopWatchers } from './watcher'
 import type { ReaderPrefs } from '../shared/types'
 import { getSetting, setSetting } from './settings'
@@ -63,7 +64,7 @@ function errText(err: unknown): string {
 }
 
 /** 渲染层可读写的应用配置键（白名单：settings 表里还有加密凭据等敏感键，不能开放） */
-const CONFIG_KEYS = new Set(['readerDefaults', 'resumeOnLaunch', 'autoRescan'])
+const CONFIG_KEYS = new Set(['readerDefaults', 'resumeOnLaunch', 'autoRescan', 'autoCheckUpdate'])
 
 export function registerIpc(): void {
   // 无边框窗口的控制按钮（渲染层自绘，见 WindowControls）
@@ -79,6 +80,13 @@ export function registerIpc(): void {
   ipcMain.handle('appWindow:isMaximized', (e) =>
     BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
   )
+
+  // 应用内更新（electron-updater，仅打包版生效，见 updater.ts）
+  ipcMain.handle('app:check-update', () => checkUpdate())
+  ipcMain.handle('app:download-update', () => downloadUpdate())
+  ipcMain.handle('app:install-update', () => installUpdate())
+  ipcMain.handle('app:update-state', () => updateState())
+  ipcMain.handle('app:version', () => app.getVersion())
 
   ipcMain.handle('libraries:list', () => listLibraries())
 

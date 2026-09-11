@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Cloud, Home, Library, Moon, Search, Settings, Sun, X } from 'lucide-react'
 import { useThemeStore } from '@/stores/theme'
 import { useDataStore } from '@/stores/data'
+import { useUpdateStore } from '@/stores/update'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { WindowControls } from '@/components/layout/WindowControls'
@@ -22,6 +23,8 @@ export function AppShell() {
   const location = useLocation()
   const onLibrary = location.pathname === '/library'
   const searchRef = useRef<HTMLInputElement>(null)
+  const currentVersion = useUpdateStore((s) => s.current)
+  const hasUpdate = useUpdateStore((s) => s.status === 'available' || s.ready !== '')
 
   // Ctrl/Cmd+K 随时呼出搜索；Esc 先清词再失焦
   useEffect(() => {
@@ -67,7 +70,22 @@ export function AppShell() {
         </nav>
 
         <div className="border-t border-sidebar-border px-5 py-3.5">
-          <span className="text-xs text-muted-foreground">v0.1.0</span>
+          <button
+            onClick={() => hasUpdate && navigate('/settings')}
+            title={hasUpdate ? '发现新版本，点击前往设置页下载' : undefined}
+            className={cn(
+              'flex items-center gap-1.5 text-xs text-muted-foreground',
+              hasUpdate && 'text-primary transition-colors hover:text-primary/80'
+            )}
+          >
+            {currentVersion ? `v${currentVersion}` : ''}
+            {hasUpdate && (
+              <span className="relative flex size-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" />
+                <span className="relative inline-flex size-2 rounded-full bg-primary" />
+              </span>
+            )}
+          </button>
         </div>
       </aside>
 
