@@ -12,8 +12,8 @@ interface ImageViewerProps {
   onNext?: () => void
 }
 
-const PAGE_RETRIES = 2
-const RETRY_MS = 1500
+/** 失败重试间隔：1s → 4s（指数退避），共 2 次后转手动重试 */
+const RETRY_DELAYS = [1000, 4000]
 
 /**
  * 单页图片：加载失败后先静默重试（云端 502/超时多数是瞬时的，换查询串强制重发），
@@ -73,8 +73,8 @@ function PageImage({
       draggable={false}
       loading={eager ? 'eager' : 'lazy'}
       onError={() => {
-        if (attempt < PAGE_RETRIES) {
-          window.setTimeout(() => setAttempt((a) => a + 1), RETRY_MS)
+        if (attempt < RETRY_DELAYS.length) {
+          window.setTimeout(() => setAttempt((a) => a + 1), RETRY_DELAYS[attempt])
         } else {
           setFailed(true)
         }
@@ -87,7 +87,7 @@ function PageImage({
 
 /** 单页 / 双页（RTL）模式的图片视口：点击区只在章节内翻页，不跨话 */
 export function ImageViewer({ chapterId }: ImageViewerProps) {
-  const { mode, fit, rtl, rotate, page, pageCount, widePages, next, prev, setPage } =
+  const { mode, fit, rtl, rotate, page, pageCount, widePages, spreadOffset, next, prev, setPage } =
     useReaderStore()
   const [zoom, setZoom] = useState(1)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -110,7 +110,7 @@ export function ImageViewer({ chapterId }: ImageViewerProps) {
   }, [])
 
   const pagesToShow =
-    mode === 'double' ? spreadPages(page, pageCount, rtl, widePages) : [page]
+    mode === 'double' ? spreadPages(page, pageCount, rtl, widePages, spreadOffset) : [page]
   const isDouble = pagesToShow.length > 1
 
   // 双页永远并排；单页按适配方式铺排

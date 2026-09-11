@@ -114,6 +114,14 @@ export interface PrefetchDone {
   seriesId: number
   cancelled: boolean
   error?: string
+  /** 重试后仍失败的章节标题（其余章节照常完成） */
+  failed?: string[]
+}
+
+/** 云端风控/会话异常通知（主进程推送） */
+export interface CloudNotice {
+  kind: 'session' | 'ratelimit'
+  message: string
 }
 
 /** 阅读偏好（按系列记忆，存主进程 electron-store） */
@@ -126,6 +134,8 @@ export interface ReaderPrefs {
   rtl?: boolean
   /** 0/90/180/270 */
   rotate?: number
+  /** 双页配对偏移（C 键切换）：0 = (1,2)(3,4)…；1 = 第 1 页单独、(2,3)(4,5)… */
+  spreadOffset?: 0 | 1
 }
 
 export function coverUrl(seriesId: number): string {

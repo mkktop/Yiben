@@ -4,9 +4,10 @@ import { createWriteStream } from 'fs'
 import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
 import { basename, dirname, join } from 'path'
-import { cloudCacheDir, cloudDownloadUrl } from './client'
+import { cloudCacheDir, cloudDownloadUrl, noteCloudError } from './client'
 import { getSetting } from '../settings'
 import { longPath } from '../util/paths'
+import { backoffDelay, sleep } from '../util/backoff'
 
 interface CacheIndex {
   /** path → { size, at }，at 用于 LRU 淘汰 */
@@ -203,30 +204,42 @@ async function download(
 
   let loaded = 0
   await withDownloadSlot(async () => {
-    const url = await cloudDownloadUrl(fileId, familyId)
-    const resp = await fetch(url)
-    if (!resp.ok || !resp.body) throw new Error(`云盘下载失败：HTTP ${resp.status}`)
+    // 瞬时失败（网络抖动/直链中途失效）按指数退避重试；会话失效交给 UI 引导
+    for (let attempt = 0; ; attempt++) {
+      const url = await cloudDownloadUrl(fileId, familyId)
+      const resp = await fetch(url)
+      if (!resp.ok || !resp.body) {
+        const err = new Error(`云盘下载失败：HTTP ${resp.status}`)
+        await rm(longPath(`${destPath}.part`), { force: true }).catch(() => {})
+        if (noteCloudError(err) === 'session' || attempt >= 2) throw err
+        await sleep(backoffDelay(attempt))
+        continue
+      }
 
-    const total = Number(resp.headers.get('content-length') ?? expectedSize ?? 0)
-    const tmp = `${destPath}.part`
-    try {
-      await pipeline(
-        Readable.fromWeb(resp.body),
-        // 透传式统计进度；pipeline 负责背压，磁盘慢时不会把整个文件堆在内存里
-        async function* (source: AsyncIterable<Buffer>) {
-          for await (const chunk of source) {
-            loaded += chunk.length
-            onProgress?.({ fileId, name: basename(destPath), loaded, total })
-            yield chunk
-          }
-        },
-        createWriteStream(longPath(tmp))
-      )
-      // 下载完成才改名，残缺文件不会被当作缓存命中
-      await rename(longPath(tmp), longPath(destPath))
-    } catch (err) {
-      await rm(longPath(tmp), { force: true }).catch(() => {})
-      throw err
+      const total = Number(resp.headers.get('content-length') ?? expectedSize ?? 0)
+      const tmp = `${destPath}.part`
+      try {
+        await pipeline(
+          Readable.fromWeb(resp.body),
+          // 透传式统计进度；pipeline 负责背压，磁盘慢时不会把整个文件堆在内存里
+          async function* (source: AsyncIterable<Buffer>) {
+            for await (const chunk of source) {
+              loaded += chunk.length
+              onProgress?.({ fileId, name: basename(destPath), loaded, total })
+              yield chunk
+            }
+          },
+          createWriteStream(longPath(tmp))
+        )
+        // 下载完成才改名，残缺文件不会被当作缓存命中
+        await rename(longPath(tmp), longPath(destPath))
+        return
+      } catch (err) {
+        await rm(longPath(tmp), { force: true }).catch(() => {})
+        if (noteCloudError(err) === 'session' || attempt >= 2) throw err
+        loaded = 0
+        await sleep(backoffDelay(attempt))
+      }
     }
   })
 

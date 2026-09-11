@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { HashRouter, Routes, Route, useNavigate } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell'
 import { ScanIndicator } from './components/ScanIndicator'
+import { CloudNoticeToast } from './components/CloudNoticeToast'
 import { HomePage } from './routes/HomePage'
 import { LibraryPage } from './routes/LibraryPage'
 import { SeriesPage } from './routes/SeriesPage'
@@ -56,6 +57,7 @@ export default function App() {
         <Route path="/reader/:chapterId" element={<ReaderPage />} />
       </Routes>
       <ScanIndicator />
+      <CloudNoticeToast />
     </HashRouter>
   )
 }

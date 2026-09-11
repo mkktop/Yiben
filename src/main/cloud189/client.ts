@@ -1,9 +1,52 @@
 import { app, safeStorage } from 'electron'
-import { CloudClient } from 'cloud189-sdk'
+import { CloudClient, FileTokenStore } from 'cloud189-sdk'
+import { rm } from 'fs/promises'
+import { join } from 'path'
 import { getSetting, setSetting } from '../settings'
+import { broadcast } from '../events'
 
 let client: CloudClient | null = null
 let currentUsername = ''
+
+/** 会话 token 落盘文件：accessToken（约 7 天）→ refreshToken 优先复用，都失效才密码登录 */
+function tokenFile(): string {
+  return join(app.getPath('userData'), 'cloud189-token.json')
+}
+
+// ---------- 风控/会话异常识别 ----------
+
+/** 同类型告警 60 秒内只广播一次，避免连环失败刷屏 */
+const noticedAt = new Map<string, number>()
+
+/**
+ * 识别云端报错里的「会话失效 / 触发限流」并广播给 UI。
+ * 覆盖在 client.ts 各出口调用，调用方照常拿到原始异常。
+ * 会话失效时顺带清掉内存会话，让 cloudStatus 如实反映「未连接」。
+ */
+export function noteCloudError(err: unknown): 'session' | 'ratelimit' | null {
+  const msg = err instanceof Error ? err.message : String(err)
+  const kind = /InvalidSessionKey|InvalidAccessToken|SessionUserNotExists|InvalidSSO|登录已失效|没有登录/i.test(
+    msg
+  )
+    ? 'session'
+    : /RatesExceed|TooManyRequests|HTTP 429|访问过于频繁|请求频繁/i.test(msg)
+      ? 'ratelimit'
+      : null
+  if (!kind) return null
+  const last = noticedAt.get(kind) ?? 0
+  if (Date.now() - last >= 60_000) {
+    noticedAt.set(kind, Date.now())
+    broadcast('cloud:notice', {
+      kind,
+      message:
+        kind === 'session'
+          ? '天翼云盘登录已失效，请到「网盘」页重新连接'
+          : '天翼云盘请求过于频繁被限流，请稍后再试'
+    })
+  }
+  if (kind === 'session') client = null
+  return kind
+}
 
 // 启动时会话恢复是异步的：协议层（封面/页面）可能先到，等登录完成再继续
 let readyWaiters: Array<() => void> = []
@@ -38,10 +81,10 @@ export function cloudStatus(): { loggedIn: boolean; username: string } {
   return { loggedIn: client !== null, username: currentUsername }
 }
 
-/** 账号密码登录；成功后凭据经 safeStorage 加密落盘，下次启动自动恢复 */
+/** 账号密码登录；会话 token 落盘复用，之后启动无需再走密码登录（降低风控风险） */
 export async function cloudLogin(username: string, password: string): Promise<void> {
-  const c = new CloudClient({ username, password })
-  // 任一 API 调用会触发 SDK 自动登录，失败则抛错
+  const c = new CloudClient({ username, password, token: new FileTokenStore(tokenFile()) })
+  // 任一 API 调用会触发 SDK 自动登录（优先用持久化 token），失败则抛错
   await c.getUserSizeInfo()
   client = c
   currentUsername = username
@@ -68,6 +111,8 @@ export function cloudLogout(): void {
   client = null
   currentUsername = ''
   setSetting<StoredCred | null>(CRED_KEY, null)
+  // 会话 token 一并清掉，避免断开后仍用旧会话复活
+  void rm(tokenFile(), { force: true }).catch(() => {})
 }
 
 export function requireClient(): CloudClient {
@@ -82,8 +127,17 @@ export interface CloudEntry {
   isDir: boolean
 }
 
-/** 列出云盘目录（自动翻页） */
+/** 列出云盘目录（自动翻页）；出口统一做风控识别 */
 export async function cloudListAll(folderId: string, familyId?: string): Promise<CloudEntry[]> {
+  try {
+    return await listAllInner(folderId, familyId)
+  } catch (err) {
+    noteCloudError(err)
+    throw err
+  }
+}
+
+async function listAllInner(folderId: string, familyId?: string): Promise<CloudEntry[]> {
   const c = requireClient()
   let rootId = folderId
   // 天翼官方「家庭云」界面展示的内容实际存放在 我的应用/家庭云 子文件夹下，
@@ -123,6 +177,15 @@ async function cloudListPage(
 }
 
 export async function cloudCapacity(familyId?: string): Promise<{ total: number; free: number }> {
+  try {
+    return await capacityInner(familyId)
+  } catch (err) {
+    noteCloudError(err)
+    throw err
+  }
+}
+
+async function capacityInner(familyId?: string): Promise<{ total: number; free: number }> {
   if (familyId) {
     // 官方 H5 家庭页同款接口：按 familyId 返回该家庭的真实配额（会员家庭可远大于
     // getUserSizeInfo 的账号级 familyCapacityInfo，那只是默认家庭的 30G 口径）。
@@ -149,22 +212,32 @@ export async function cloudCapacity(familyId?: string): Promise<{ total: number;
 }
 
 export async function cloudFamilies(): Promise<Array<{ id: string; name: string }>> {
-  const resp = await requireClient().getFamilyList()
-  return (resp.familyInfoResp ?? []).map((f) => ({
-    id: String(f.familyId),
-    name: f.remarkName
-  }))
+  try {
+    const resp = await requireClient().getFamilyList()
+    return (resp.familyInfoResp ?? []).map((f) => ({
+      id: String(f.familyId),
+      name: f.remarkName
+    }))
+  } catch (err) {
+    noteCloudError(err)
+    throw err
+  }
 }
 
 /** 获取下载直链（有时效，用前即取）。
  *  天翼返回的 URL 带 XML 实体转义（&amp;），必须先解码，否则请求参数全失效返回 403 */
 export async function cloudDownloadUrl(fileId: string, familyId?: string): Promise<string> {
-  const resp = await requireClient().getFileDownloadUrl({ fileId, familyId })
-  return resp.fileDownloadUrl
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
+  try {
+    const resp = await requireClient().getFileDownloadUrl({ fileId, familyId })
+    return resp.fileDownloadUrl
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+  } catch (err) {
+    noteCloudError(err)
+    throw err
+  }
 }
 
 export function cloudCacheDir(): string {

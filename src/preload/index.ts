@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { PrefetchDone, PrefetchProgress } from '../shared/types'
+import type { CloudNotice, PrefetchDone, PrefetchProgress } from '../shared/types'
 
 const api = {
   libraries: {
@@ -51,8 +51,8 @@ const api = {
       ipcRenderer.invoke('reader:neighbors', chapterId) as Promise<{
         index: number
         total: number
-        prev: { id: number; title: string; page_count: number } | null
-        next: { id: number; title: string; page_count: number } | null
+        prev: { id: number; title: string; page_count: number; kind: string } | null
+        next: { id: number; title: string; page_count: number; kind: string } | null
       } | null>,
     /** 页尺寸（双页跨页识别）：立即返回已知记录，缺的页主进程后台探测后经事件推送 */
     pageDims: (chapterId: number) =>
@@ -70,6 +70,7 @@ const api = {
       fit?: 'width' | 'height' | 'original'
       rtl?: boolean
       rotate?: number
+      spreadOffset?: 0 | 1
     }) => ipcRenderer.invoke('reader:prefs:set', { seriesId, prefs }),
     getDefaults: () => ipcRenderer.invoke('reader:defaults:get'),
     setDefaults: (prefs: {
@@ -77,6 +78,7 @@ const api = {
       fit?: 'width' | 'height' | 'original'
       rtl?: boolean
       rotate?: number
+      spreadOffset?: 0 | 1
     }) => ipcRenderer.invoke('reader:defaults:set', prefs)
   },
   progress: {
@@ -141,6 +143,14 @@ const api = {
       ipcRenderer.on('prefetch:done', listener)
       return (): void => {
         ipcRenderer.removeListener('prefetch:done', listener)
+      }
+    },
+    /** 云端风控/会话失效通知（阅读器/任意页面全局提示） */
+    onCloudNotice: (cb: (payload: CloudNotice) => void) => {
+      const listener = (_e: unknown, payload: CloudNotice): void => cb(payload)
+      ipcRenderer.on('cloud:notice', listener)
+      return (): void => {
+        ipcRenderer.removeListener('cloud:notice', listener)
       }
     }
   },
