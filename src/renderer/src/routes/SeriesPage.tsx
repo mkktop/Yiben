@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
+  AlertTriangle,
   ArrowLeft,
   BookOpen,
   CheckCircle2,
@@ -22,9 +23,38 @@ import { useAsync } from '@/hooks/useAsync'
 import { useDataStore } from '@/stores/data'
 import { CoverImage } from '@/components/library/CoverImage'
 import { EmptyHint } from '@/components/library/CoverGrid'
-import type { PrefetchDone, PrefetchProgress, Series, SeriesDetail } from '@shared/types'
+import type {
+  ChapterWithProgress,
+  PrefetchDone,
+  PrefetchProgress,
+  Series,
+  SeriesDetail
+} from '@shared/types'
 import { parseTags } from '@shared/types'
 import { cn, errorMessage } from '@/lib/utils'
+
+/** LanguageISO 代码 → 展示名（仅常见几种，其余原样展示） */
+const LANG_NAMES: Record<string, string> = {
+  zh: '中文',
+  ja: '日语',
+  ko: '韩语',
+  en: '英语'
+}
+
+/** 章节按卷号分组（相邻同卷聚合；volume 为空的章节不显示组头） */
+function volumeGroups(chapters: ChapterWithProgress[]): Array<{
+  volume: string | null
+  items: Array<{ c: ChapterWithProgress; i: number }>
+}> {
+  const groups: Array<{ volume: string | null; items: Array<{ c: ChapterWithProgress; i: number }> }> =
+    []
+  chapters.forEach((c, i) => {
+    const last = groups[groups.length - 1]
+    if (last && last.volume === c.volume) last.items.push({ c, i })
+    else groups.push({ volume: c.volume, items: [{ c, i }] })
+  })
+  return groups
+}
 
 /** 手动编辑元数据：保存后打 meta_edited 标记，重扫不会覆盖 */
 function MetaDialog({
@@ -371,6 +401,8 @@ export function SeriesPage() {
             )}
             <p className="mt-3 text-xs text-muted-foreground">
               共 {totalChapters} 话 · 已读 {readChapters}
+              {series.year ? ` · ${series.year}` : ''}
+              {series.language ? ` · ${LANG_NAMES[series.language] ?? series.language}` : ''}
               {series.status ? ` · ${series.status}` : ''}
             </p>
             {nextChapter && (
@@ -391,47 +423,75 @@ export function SeriesPage() {
 
         <h2 className="mb-3 mt-8 text-sm font-medium text-muted-foreground">章节列表</h2>
         <div className="overflow-hidden rounded-xl border">
-          {chapters.map((c, i) => {
-            const done = c.completed === 1
-            const reading = !done && (c.read_page ?? 0) > 0
-            const pct = c.page_count > 0 ? Math.round((((c.read_page ?? 0) + 1) / c.page_count) * 100) : 0
-            return (
-              <div
-                key={c.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => navigate(`/reader/${c.id}`)}
-                onKeyDown={(e) => e.key === 'Enter' && navigate(`/reader/${c.id}`)}
-                className={cn(
-                  'flex w-full cursor-pointer items-center gap-4 px-5 py-3.5 text-left transition-colors hover:bg-accent',
-                  i > 0 && 'border-t'
-                )}
-              >
-                <span className="w-10 shrink-0 text-center text-xs text-muted-foreground">
-                  {c.number ?? i + 1}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-sm">{c.title}</span>
-                {done ? (
-                  <span className="shrink-0 text-xs text-muted-foreground">已读完</span>
-                ) : reading ? (
-                  c.page_count > 0 ? (
-                    <div className="flex w-28 shrink-0 items-center gap-2">
-                      <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
-                        <div className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
-                      </div>
-                      <span className="text-[11px] text-muted-foreground">{pct}%</span>
-                    </div>
-                  ) : (
-                    // 页数未知（PDF 尚未打开过）：精确到「第几页」比一个恒为 0% 的进度条有用
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      第 {(c.read_page ?? 0) + 1} 页
+          {volumeGroups(chapters).map((g, gi) => (
+            <Fragment key={`${g.volume ?? '_'}-${gi}`}>
+              {g.volume !== null && (
+                <div
+                  className={cn(
+                    'bg-muted/50 px-5 py-2 text-xs font-medium text-muted-foreground',
+                    gi > 0 && 'border-t'
+                  )}
+                >
+                  第 {g.volume} 卷
+                </div>
+              )}
+              {g.items.map(({ c, i }, idx) => {
+                const done = c.completed === 1
+                const reading = !done && (c.read_page ?? 0) > 0
+                const pct =
+                  c.page_count > 0
+                    ? Math.round((((c.read_page ?? 0) + 1) / c.page_count) * 100)
+                    : 0
+                return (
+                  <div
+                    key={c.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => navigate(`/reader/${c.id}`)}
+                    onKeyDown={(e) => e.key === 'Enter' && navigate(`/reader/${c.id}`)}
+                    className={cn(
+                      'flex w-full cursor-pointer items-center gap-4 px-5 py-3.5 text-left transition-colors hover:bg-accent',
+                      // 组内首行由组头承担分隔；无组头的组之间用首行上边框
+                      (idx > 0 || (!g.volume && i > 0)) && 'border-t'
+                    )}
+                  >
+                    <span className="w-10 shrink-0 text-center text-xs text-muted-foreground">
+                      {c.number ?? i + 1}
                     </span>
-                  )
-                ) : (
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {c.kind === 'pdf' && c.page_count === 0 ? 'PDF' : `${c.page_count} 页`}
-                  </span>
-                )}
+                    <span className="min-w-0 flex-1 truncate text-sm">{c.title}</span>
+                    {c.scan_error ? (
+                      // 损坏的压缩包等：悬浮显示扫描失败原因，每轮扫描会自动重试
+                      <span
+                        className="flex shrink-0 items-center gap-1 text-xs text-destructive"
+                        title={c.scan_error}
+                      >
+                        <AlertTriangle className="size-3.5" />
+                        扫描失败
+                      </span>
+                    ) : done ? (
+                      <span className="shrink-0 text-xs text-muted-foreground">已读完</span>
+                    ) : reading ? (
+                      c.page_count > 0 ? (
+                        <div className="flex w-28 shrink-0 items-center gap-2">
+                          <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-full rounded-full bg-primary"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                          <span className="text-[11px] text-muted-foreground">{pct}%</span>
+                        </div>
+                      ) : (
+                        // 页数未知（PDF 尚未打开过）：精确到「第几页」比一个恒为 0% 的进度条有用
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          第 {(c.read_page ?? 0) + 1} 页
+                        </span>
+                      )
+                    ) : (
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {c.kind === 'pdf' && c.page_count === 0 ? 'PDF' : `${c.page_count} 页`}
+                      </span>
+                    )}
                 {/* 已读勾选：点图标只改已读状态，不进入阅读器 */}
                 <button
                   className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground/50 hover:bg-accent hover:text-foreground"
@@ -448,8 +508,10 @@ export function SeriesPage() {
                   )}
                 </button>
               </div>
-            )
-          })}
+              )
+            })}
+            </Fragment>
+          ))}
         </div>
       </div>
 

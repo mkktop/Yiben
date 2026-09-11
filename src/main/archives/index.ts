@@ -4,13 +4,18 @@ import type { ArchiveDriver, DriverKind } from './types'
 import { FolderDriver, ZipDriver } from './zip'
 import { RarDriver } from './rar'
 import { SevenZipDriver } from './sevenzip'
+import { EpubDriver } from './epub'
 import { UnsupportedFormatError } from './types'
+import { sniffArchiveKind } from './sniff'
 
 export * from './types'
+export { sniffArchiveKind } from './sniff'
 
-function kindOf(path: string, isDir: boolean): DriverKind | null {
+async function resolveKind(path: string, isDir: boolean): Promise<DriverKind | null> {
   if (isDir) return 'folder'
-  return archiveKindOf(path) as DriverKind | null
+  const extKind = archiveKindOf(path) as DriverKind | null
+  if (!extKind) return null
+  return sniffArchiveKind(path, extKind)
 }
 
 async function open(path: string, kind: DriverKind): Promise<ArchiveDriver> {
@@ -21,6 +26,8 @@ async function open(path: string, kind: DriverKind): Promise<ArchiveDriver> {
       return ZipDriver.create(path)
     case 'rar':
       return RarDriver.create(path)
+    case 'epub':
+      return EpubDriver.create(path)
     case '7z':
     case 'tar':
       return SevenZipDriver.create(path)
@@ -40,7 +47,7 @@ const cache = new Map<string, { driver: ArchiveDriver; stamp: number }>()
 let clock = 0
 
 export async function getDriver(path: string, isDir: boolean): Promise<ArchiveDriver> {
-  const kind = kindOf(path, isDir)
+  const kind = await resolveKind(path, isDir)
   if (!kind) throw new UnsupportedFormatError(extOf(path) || 'unknown')
 
   let stamp = 0
@@ -86,7 +93,7 @@ export async function withDriver<T>(
   isDir: boolean,
   fn: (driver: ArchiveDriver) => Promise<T>
 ): Promise<T> {
-  const driver = await open(path, kindOf(path, isDir) as DriverKind)
+  const driver = await open(path, (await resolveKind(path, isDir)) as DriverKind)
   try {
     return await fn(driver)
   } finally {

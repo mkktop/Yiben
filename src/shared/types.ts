@@ -39,6 +39,10 @@ export interface Series {
   folder_path: string
   is_single_file: number
   added_at: number
+  /** 发表年份（ComicInfo Year） */
+  year?: number | null
+  /** 语言代码（ComicInfo LanguageISO） */
+  language?: string | null
 }
 
 export interface Chapter {
@@ -53,6 +57,8 @@ export interface Chapter {
   page_count: number
   size: number
   mtime: number
+  /** 扫描列页失败的原因；成功为 null */
+  scan_error?: string | null
 }
 
 export interface ChapterWithProgress extends Chapter {

@@ -28,6 +28,10 @@ export interface SeriesRow {
   hidden?: number
   /** 扫描时源目录不可用（移动硬盘未挂载 / 根目录改名）：保留阅读进度，列表不展示 */
   missing?: number
+  /** 发表年份（ComicInfo Year） */
+  year?: number | null
+  /** 语言代码（ComicInfo LanguageISO） */
+  language?: string | null
 }
 
 export interface ChapterRow {
@@ -44,6 +48,8 @@ export interface ChapterRow {
   mtime: number
   /** 云盘压缩包章节的文件 id（本地章节为 null） */
   cloud_file_id?: string | null
+  /** 扫描列页失败的原因；成功为 null */
+  scan_error?: string | null
 }
 
 export interface ChapterWithProgress extends ChapterRow {
@@ -161,6 +167,12 @@ function migrate(db: Database.Database): void {
   tryAlter('ALTER TABLE series ADD COLUMN missing INTEGER NOT NULL DEFAULT 0')
   // 用户手动编辑过元数据：之后的扫描不覆盖这些字段
   tryAlter('ALTER TABLE series ADD COLUMN meta_edited INTEGER NOT NULL DEFAULT 0')
+  tryAlter('ALTER TABLE series ADD COLUMN year INTEGER')
+  tryAlter('ALTER TABLE series ADD COLUMN language TEXT')
+  /** 已探测过包内 ComicInfo/EPUB 元数据（无论成败，填空性质不重复劳动） */
+  tryAlter('ALTER TABLE series ADD COLUMN meta_probed INTEGER NOT NULL DEFAULT 0')
+  // 扫描列页失败的原因（损坏的压缩包等），成功时清空
+  tryAlter('ALTER TABLE chapters ADD COLUMN scan_error TEXT')
 }
 
 /** 每次扫描后重建全文索引（藏书量级下重建成本可忽略） */
@@ -220,13 +232,15 @@ export interface SeriesUpsert {
   tags: string | null
   folder_path: string
   is_single_file: number
+  year?: number | null
+  language?: string | null
 }
 
 export function upsertSeries(s: SeriesUpsert): number {
   const row = db
     .prepare(
-      `INSERT INTO series (library_id, title, author, description, status, tags, folder_path, is_single_file, added_at)
-       VALUES (@library_id, @title, @author, @description, @status, @tags, @folder_path, @is_single_file, @added_at)
+      `INSERT INTO series (library_id, title, author, description, status, tags, folder_path, is_single_file, added_at, year, language)
+       VALUES (@library_id, @title, @author, @description, @status, @tags, @folder_path, @is_single_file, @added_at, @year, @language)
        ON CONFLICT(folder_path) DO UPDATE SET
          library_id = excluded.library_id,
          title = CASE WHEN series.meta_edited = 1 THEN series.title ELSE excluded.title END,
@@ -235,11 +249,13 @@ export function upsertSeries(s: SeriesUpsert): number {
          status = CASE WHEN series.meta_edited = 1 THEN series.status ELSE excluded.status END,
          tags = CASE WHEN series.meta_edited = 1 THEN series.tags ELSE excluded.tags END,
          is_single_file = excluded.is_single_file,
+         year = CASE WHEN series.meta_edited = 1 THEN series.year ELSE excluded.year END,
+         language = CASE WHEN series.meta_edited = 1 THEN series.language ELSE excluded.language END,
          missing = 0,
          hidden = CASE WHEN series.library_id = excluded.library_id THEN series.hidden ELSE 0 END
        RETURNING id`
     )
-    .get({ added_at: Date.now(), ...s }) as { id: number }
+    .get({ added_at: Date.now(), year: null, language: null, ...s }) as { id: number }
   return row.id
 }
 
@@ -268,6 +284,8 @@ export function updateSeriesMeta(id: number, patch: SeriesMetaPatch): void {
 export interface RetireResult {
   /** 因源目录消失而被标记 missing 的系列数（进度保留） */
   missing: number
+  /** 本轮标 missing 的系列 id（重定位匹配用） */
+  missingSeries: number[]
   deletedSeries: number[]
   deletedChapters: number[]
 }
@@ -292,11 +310,12 @@ export function retireSeriesNotIn(libraryId: number, keepPaths: string[]): Retir
   const markMissing = db.prepare('UPDATE series SET missing = 1 WHERE id = ?')
   const del = db.prepare('DELETE FROM series WHERE id = ?')
 
-  const result: RetireResult = { missing: 0, deletedSeries: [], deletedChapters: [] }
+  const result: RetireResult = { missing: 0, missingSeries: [], deletedSeries: [], deletedChapters: [] }
   for (const row of gone) {
     if (hasProgress.get(row.id)) {
       markMissing.run(row.id)
       result.missing++
+      result.missingSeries.push(row.id)
       continue
     }
     for (const c of chapterIds.all(row.id) as { id: number }[]) result.deletedChapters.push(c.id)
@@ -306,8 +325,92 @@ export function retireSeriesNotIn(libraryId: number, keepPaths: string[]): Retir
   return result
 }
 
-/** 删除书库前收集产物清单：章节行会随级联删除，必须先取 */
-export function libraryArtifacts(libraryId: number): {
+// ---------- 系列「移动/改名」重定位 ----------
+
+/** 本地库全部 missing 系列及其章节指纹（重定位匹配输入） */
+export function localMissingSeriesChapters(): RelocationSeries[] {
+  return seriesChaptersOf(`WHERE s.missing = 1 AND l.kind = 'local'`)
+}
+
+/** 本轮扫描保留下来的本地系列的章节指纹 */
+export function localSeriesChaptersByPaths(folderPaths: string[]): RelocationSeries[] {
+  if (folderPaths.length === 0) return []
+  return seriesChaptersOf(
+    `WHERE s.folder_path IN (${folderPaths.map(() => '?').join(',')}) AND s.missing = 0 AND l.kind = 'local'`,
+    ...folderPaths
+  )
+}
+
+export interface RelocationSeries {
+  seriesId: number
+  folderPath: string
+  chapters: Array<{ id: number; rel: string; size: number; mtime: number }>
+}
+
+function seriesChaptersOf(cond: string, ...params: unknown[]): RelocationSeries[] {
+  const rows = db
+    .prepare(
+      `SELECT s.id AS seriesId, s.folder_path AS folderPath,
+              c.id AS chapterId, c.path AS path, c.size AS size, c.mtime AS mtime
+       FROM series s
+       JOIN chapters c ON c.series_id = s.id
+       JOIN libraries l ON l.id = s.library_id
+       ${cond}
+       ORDER BY s.id, c.sort_index`
+    )
+    .all(...params) as Array<{
+    seriesId: number
+    folderPath: string
+    chapterId: number
+    path: string
+    size: number
+    mtime: number
+  }>
+  const out: RelocationSeries[] = []
+  let cur: RelocationSeries | null = null
+  for (const r of rows) {
+    if (!cur || cur.seriesId !== r.seriesId) {
+      cur = { seriesId: r.seriesId, folderPath: r.folderPath, chapters: [] }
+      out.push(cur)
+    }
+    // 章节相对系列根的路径：移动/改名后 folder_path 变了，rel 是不变量
+    const rel = r.path.startsWith(r.folderPath)
+      ? r.path.slice(r.folderPath.length).replace(/^[\\/]+/, '')
+      : r.path
+    cur.chapters.push({ id: r.chapterId, rel, size: r.size, mtime: r.mtime })
+  }
+  return out
+}
+
+/**
+ * 把 missing 旧系列（移动/改名前的路径）的进度/书签/页尺寸按章节映射转移到新系列，
+ * 然后删除旧系列。新章节行刚扫描生成、尚无进度，先清一遍目标再转移是防御性兜底。
+ */
+export function adoptSeriesData(oldSeriesId: number, chapterMap: Map<number, number>): void {
+  const tx = db.transaction(() => {
+    for (const [oldId, newId] of chapterMap) {
+      for (const table of ['progress', 'bookmarks', 'page_dims']) {
+        db.prepare(`DELETE FROM ${table} WHERE chapter_id = ?`).run(newId)
+        db.prepare(`UPDATE ${table} SET chapter_id = ? WHERE chapter_id = ?`).run(newId, oldId)
+      }
+    }
+    db.prepare('DELETE FROM series WHERE id = ?').run(oldSeriesId)
+  })
+  tx()
+}
+
+/** 该路径的系列是否已探测过包内元数据（不存在视为未探测，新系列要探） */
+export function seriesMetaProbed(folderPath: string): boolean {
+  return Boolean(
+    db.prepare('SELECT 1 FROM series WHERE folder_path = ? AND meta_probed = 1').get(folderPath)
+  )
+}
+
+export function markSeriesMetaProbed(seriesId: number): void {
+  db.prepare('UPDATE series SET meta_probed = 1 WHERE id = ?').run(seriesId)
+}
+
+/** 删除书库前收集产物清单：章节行会随级联删除，必须先取 */export function libraryArtifacts(libraryId: number): {
   seriesIds: number[]
   chapterIds: number[]
 } {
@@ -336,11 +439,12 @@ export function upsertChapter(c: {
   size: number
   mtime: number
   cloud_file_id?: string | null
+  scan_error?: string | null
 }): number {
   const row = db
     .prepare(
-      `INSERT INTO chapters (series_id, title, volume, number, sort_index, path, kind, page_count, size, mtime, cloud_file_id)
-       VALUES (@series_id, @title, @volume, @number, @sort_index, @path, @kind, @page_count, @size, @mtime, @cloud_file_id)
+      `INSERT INTO chapters (series_id, title, volume, number, sort_index, path, kind, page_count, size, mtime, cloud_file_id, scan_error)
+       VALUES (@series_id, @title, @volume, @number, @sort_index, @path, @kind, @page_count, @size, @mtime, @cloud_file_id, @scan_error)
        ON CONFLICT(path) DO UPDATE SET
          series_id = excluded.series_id,
          title = excluded.title,
@@ -351,10 +455,11 @@ export function upsertChapter(c: {
          page_count = excluded.page_count,
          size = excluded.size,
          mtime = excluded.mtime,
-         cloud_file_id = excluded.cloud_file_id
+         cloud_file_id = excluded.cloud_file_id,
+         scan_error = excluded.scan_error
        RETURNING id`
     )
-    .get({ cloud_file_id: null, ...c }) as { id: number }
+    .get({ cloud_file_id: null, scan_error: null, ...c }) as { id: number }
   return row.id
 }
 

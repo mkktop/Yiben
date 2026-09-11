@@ -83,5 +83,13 @@ export class SevenZipDriver implements ArchiveDriver {
     return run7zBinary(['e', '-so', '-spd', this.file, name])
   }
 
+  async readEntry(name: string): Promise<Buffer | null> {
+    try {
+      return await run7zBinary(['e', '-so', '-spd', this.file, name])
+    } catch {
+      return null
+    }
+  }
+
   async close(): Promise<void> {}
 }

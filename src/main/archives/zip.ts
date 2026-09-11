@@ -29,6 +29,14 @@ export class FolderDriver implements ArchiveDriver {
     return readFile(longPath(joinPath(this.dir, page.name)))
   }
 
+  async readEntry(name: string): Promise<Buffer | null> {
+    try {
+      return await readFile(longPath(joinPath(this.dir, name)))
+    } catch {
+      return null
+    }
+  }
+
   async close(): Promise<void> {}
 }
 
@@ -58,6 +66,14 @@ export class ZipDriver implements ArchiveDriver {
     if (!page) throw new Error(`页码越界：${index}`)
     const data = await this.zip.entryData(page.name)
     return Buffer.from(data)
+  }
+
+  async readEntry(name: string): Promise<Buffer | null> {
+    try {
+      return Buffer.from(await this.zip.entryData(name))
+    } catch {
+      return null
+    }
   }
 
   async close(): Promise<void> {

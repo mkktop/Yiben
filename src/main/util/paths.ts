@@ -2,12 +2,23 @@ import { readdir } from 'fs/promises'
 import { join } from 'path'
 
 /** 图片扩展名（Chromium 可直接渲染的） */
-const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif', '.bmp'])
+const IMAGE_EXTS = new Set([
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.apng',
+  '.webp',
+  '.gif',
+  '.avif',
+  '.bmp',
+  '.svg'
+])
 
 /** 压缩包/PDF 扩展名 → 章节类型 */
 const ARCHIVE_KINDS: Record<string, string> = {
   '.zip': 'zip',
   '.cbz': 'zip',
+  '.epub': 'epub',
   '.rar': 'rar',
   '.cbr': 'rar',
   '.7z': '7z',
@@ -40,6 +51,10 @@ export function mimeOfImage(path: string): string {
   switch (extOf(path)) {
     case '.png':
       return 'image/png'
+    case '.apng':
+      return 'image/apng'
+    case '.svg':
+      return 'image/svg+xml'
     case '.webp':
       return 'image/webp'
     case '.gif':

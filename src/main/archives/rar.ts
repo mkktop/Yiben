@@ -44,5 +44,14 @@ export class RarDriver implements ArchiveDriver {
     return Buffer.from(file.extraction)
   }
 
+  async readEntry(name: string): Promise<Buffer | null> {
+    try {
+      const file = [...this.extractor.extract({ files: [name] }).files][0]
+      return file?.extraction ? Buffer.from(file.extraction) : null
+    } catch {
+      return null
+    }
+  }
+
   async close(): Promise<void> {}
 }
