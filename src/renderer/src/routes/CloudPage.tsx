@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft,
   ChevronRight,
@@ -171,7 +171,7 @@ function DriveList({
                   : '未连接'}
                 {capacity && capacity.total > 0 && (
                   <span className="ml-2">
-                    · 空间 {((capacity.total - capacity.free) / 1024 ** 3).toFixed(1)} /{' '}
+                    · 个人云空间 {((capacity.total - capacity.free) / 1024 ** 3).toFixed(1)} /{' '}
                     {(capacity.total / 1024 ** 3).toFixed(1)} GB
                   </span>
                 )}
@@ -290,6 +290,21 @@ function Cloud189Drive({
   const current = stack[stack.length - 1]
   const famId = familyId || undefined
 
+  // 容量请求失败（登录恢复竞态/网络抖动）3 秒后自动重试一次，避免空间栏永久空白
+  const capRetry = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loadCapacity = useCallback((fam: string | undefined): void => {
+    if (capRetry.current) clearTimeout(capRetry.current)
+    void window.yiben.cloud
+      .capacity(fam)
+      .then(setCapacity)
+      .catch(() => {
+        capRetry.current = setTimeout(() => {
+          void window.yiben.cloud.capacity(fam).then(setCapacity).catch(() => {})
+        }, 3000)
+      })
+  }, [])
+  useEffect(() => () => { if (capRetry.current) clearTimeout(capRetry.current) }, [])
+
   /**
    * 加载目录。refresh 为 true 时不压栈（刷新当前层），
    * 修掉旧实现「刷新会往面包屑里重复压一层」的问题。
@@ -317,7 +332,7 @@ function Cloud189Drive({
 
   // 进入网盘 / 切换个人云与家庭云 → 加载对应空间（容量跟随当前空间）
   useEffect(() => {
-    void window.yiben.cloud.capacity(famId).then(setCapacity).catch(() => {})
+    loadCapacity(famId)
     setStack([])
     browseInto(undefined, '根目录', famId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -412,7 +427,8 @@ function Cloud189Drive({
               <p className="text-sm font-medium">{status.username}</p>
               {capacity && capacity.total > 0 && (
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  云盘空间 {((capacity.total - capacity.free) / 1024 ** 3).toFixed(1)} /{' '}
+                  {familyId ? '家庭云空间' : '个人云空间'}{' '}
+                  {((capacity.total - capacity.free) / 1024 ** 3).toFixed(1)} /{' '}
                   {(capacity.total / 1024 ** 3).toFixed(1)} GB
                 </p>
               )}

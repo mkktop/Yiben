@@ -125,11 +125,13 @@ async function cloudListPage(
 export async function cloudCapacity(familyId?: string): Promise<{ total: number; free: number }> {
   const info = await requireClient().getUserSizeInfo()
   if (familyId) {
+    // 家庭容量是账号级单一值（getUserSizeInfo 不接受 familyId），多个家庭共用此口径；
+    // 取不到时如实返回 0 让 UI 隐藏，不能回落到个人云数字冒充家庭容量
     const fam = info.familyCapacityInfo as
       | { totalSize?: number | string; freeSize?: number | string }
       | undefined
     const total = Number(fam?.totalSize ?? 0)
-    if (total > 0) return { total, free: Number(fam?.freeSize ?? 0) }
+    return { total, free: total > 0 ? Number(fam?.freeSize ?? 0) : 0 }
   }
   const personal = info.cloudCapacityInfo
   return {
