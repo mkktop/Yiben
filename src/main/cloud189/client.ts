@@ -123,16 +123,24 @@ async function cloudListPage(
 }
 
 export async function cloudCapacity(familyId?: string): Promise<{ total: number; free: number }> {
-  const info = await requireClient().getUserSizeInfo()
   if (familyId) {
-    // 家庭容量是账号级单一值（getUserSizeInfo 不接受 familyId），多个家庭共用此口径；
-    // 取不到时如实返回 0 让 UI 隐藏，不能回落到个人云数字冒充家庭容量
-    const fam = info.familyCapacityInfo as
-      | { totalSize?: number | string; freeSize?: number | string }
-      | undefined
-    const total = Number(fam?.totalSize ?? 0)
-    return { total, free: total > 0 ? Number(fam?.freeSize ?? 0) : 0 }
+    // 官方 H5 家庭页同款接口：按 familyId 返回该家庭的真实配额（会员家庭可远大于
+    // getUserSizeInfo 的账号级 familyCapacityInfo，那只是默认家庭的 30G 口径）。
+    // H5 走 api.cloud.189.cn + AccessToken 签名，SDK 钩子对该域名的请求自动处理。
+    const resp = (await requireClient().request
+      .get(`https://api.cloud.189.cn/open/family/file/getUserInfo.action?familyId=${familyId}`)
+      .json()) as {
+      res_code?: string | number
+      capacity?: number | string
+      available?: number | string
+    }
+    if (String(resp.res_code ?? '0') === '0') {
+      const total = Number(resp.capacity ?? 0)
+      return { total, free: Number(resp.available ?? 0) }
+    }
+    return { total: 0, free: 0 }
   }
+  const info = await requireClient().getUserSizeInfo()
   const personal = info.cloudCapacityInfo
   return {
     total: Number(personal?.totalSize ?? 0),
