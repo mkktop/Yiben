@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils'
 const navItems = [
   { to: '/', label: '首页', icon: Home },
   { to: '/library', label: '书架', icon: Library },
-  { to: '/cloud', label: '天翼云盘', icon: Cloud },
+  { to: '/cloud', label: '网盘', icon: Cloud },
   { to: '/settings', label: '设置', icon: Settings }
 ]
 

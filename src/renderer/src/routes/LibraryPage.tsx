@@ -336,7 +336,7 @@ export function LibraryPage() {
             <button onClick={addLibrary} className="ml-1 text-primary underline underline-offset-2">
               添加本地文件夹
             </button>
-            ，把漫画收进来（也可在左侧「天翼云盘」添加云端目录）
+            ，把漫画收进来（也可在左侧「网盘」添加云端目录）
           </EmptyHint>
         ) : (
           <CoverGrid
