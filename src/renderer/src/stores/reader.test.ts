@@ -45,6 +45,64 @@ describe('spreadPages', () => {
   })
 })
 
+describe('spreadPages 跨页配对偏移（C 键）', () => {
+  it('偏移 1：封面与第 1 页都单独，之后 (2,3)(4,5) 成对', () => {
+    expect(spreadPages(0, 10, false, [], 1)).toEqual([0])
+    expect(spreadPages(1, 10, false, [], 1)).toEqual([1])
+    expect(spreadPages(2, 10, false, [], 1)).toEqual([2, 3])
+    expect(spreadPages(3, 10, false, [], 1)).toEqual([2, 3])
+    expect(spreadPages(4, 10, false, [], 1)).toEqual([4, 5])
+  })
+
+  it('偏移 1 时日漫方向只反转 spread 内顺序', () => {
+    expect(spreadPages(2, 10, true, [], 1)).toEqual([3, 2])
+  })
+
+  it('偏移 1 与跨页大图叠加：大图仍单独，其后重新配对', () => {
+    const wide = [3]
+    expect(spreadPages(2, 10, false, wide, 1)).toEqual([2])
+    expect(spreadPages(3, 10, false, wide, 1)).toEqual([3])
+    expect(spreadPages(4, 10, false, wide, 1)).toEqual([4, 5])
+  })
+
+  it('偏移 1 的末屏：偶数页收完整一对，奇数页落单', () => {
+    // 10 页：[0][1](2,3)(4,5)(6,7)(8,9) —— 末屏是完整一对
+    expect(spreadPages(9, 10, false, [], 1)).toEqual([8, 9])
+    // 9 页：…(6,7) 后第 8 页落单
+    expect(spreadPages(8, 9, false, [], 1)).toEqual([8])
+  })
+
+  it('切换偏移后翻页步进仍覆盖每一屏', () => {
+    useReaderStore.getState().init({ mode: 'double', spreadOffset: 1 }, 10, 0)
+    const visited: number[] = [useReaderStore.getState().page]
+    for (let i = 0; i < 8; i++) {
+      useReaderStore.getState().next()
+      visited.push(useReaderStore.getState().page)
+    }
+    // [0] [1] (2,3) (4,5) (6,7) (8,9)
+    expect(visited).toEqual([0, 1, 2, 4, 6, 8, 9, 9, 9])
+    const s = useReaderStore.getState()
+    const spreads = new Set(
+      visited.map((p) => JSON.stringify(spreadPages(p, 10, false, s.widePages, 1)))
+    )
+    expect(spreads.size).toBe(6)
+  })
+
+  it('atLastScreen 感知偏移：7 页偏移 1 时末屏是 [6]', () => {
+    expect(atLastScreen(5, 7, 'double', [], 1)).toBe(false)
+    expect(atLastScreen(6, 7, 'double', [], 1)).toBe(true)
+    // 偏移 0 时 7 页的末屏是 (5,6)
+    expect(atLastScreen(5, 7, 'double')).toBe(true)
+  })
+
+  it('init 从偏好中恢复 spreadOffset', () => {
+    useReaderStore.getState().init({ spreadOffset: 1 }, 10, 0)
+    expect(useReaderStore.getState().spreadOffset).toBe(1)
+    useReaderStore.getState().init({}, 10, 0)
+    expect(useReaderStore.getState().spreadOffset).toBe(0)
+  })
+})
+
 describe('翻页步进', () => {
   beforeEach(() => setup(10))
 

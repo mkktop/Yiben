@@ -125,3 +125,18 @@
   scrollbar-width: thin;
   scrollbar-color: color-mix(in oklch, var(--foreground) 18%, transparent) transparent;
 }
+
+/* 阅读器提示浮层（方向提示 / 操作反馈）淡入上浮 */
+@keyframes hint-pop {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.hint-pop {
+  animation: hint-pop 0.25s ease-out;
+}

@@ -14,6 +14,8 @@ interface ReaderState {
   pageCount: number
   /** 横宽比 >1 的跨页大图（扉页/彩页），双页模式下单独占满一屏 */
   widePages: number[]
+  /** 双页配对偏移：0 = (1,2)(3,4)…；1 = 第 1 页单独、(2,3)(4,5)…（C 键切换） */
+  spreadOffset: number
 
   /** 沉浸模式：隐藏 UI */
   immersive: boolean
@@ -38,6 +40,7 @@ export const useReaderStore = create<ReaderState>((set, get) => ({
   /** 0 = 未知（init 前或页数待回填），此时不判定「已读完」 */
   pageCount: 0,
   widePages: [],
+  spreadOffset: 0,
   immersive: false,
   showThumbs: false,
 
@@ -50,6 +53,7 @@ export const useReaderStore = create<ReaderState>((set, get) => ({
       pageCount,
       page: clampPage(startPage, pageCount),
       widePages: [],
+      spreadOffset: prefs.spreadOffset ?? 0,
       immersive: false
     }),
 
@@ -61,22 +65,22 @@ export const useReaderStore = create<ReaderState>((set, get) => ({
   // 页码始终按阅读顺序递增；rtl 只影响 spread 内的左右排布（见 spreadPages）。
   // 步长取「当前 spread 的阅读顺序末页 +1」：跨页大图单独成屏时步长自动变 1。
   next: () => {
-    const { mode, page, pageCount, widePages, setPage } = get()
+    const { mode, page, pageCount, widePages, spreadOffset, setPage } = get()
     if (mode !== 'double' || pageCount <= 0) {
       setPage(page + 1)
       return
     }
-    const spread = spreadPages(page, pageCount, false, widePages)
+    const spread = spreadPages(page, pageCount, false, widePages, spreadOffset)
     setPage(Math.max(...spread) + 1)
   },
 
   prev: () => {
-    const { mode, page, pageCount, widePages, setPage } = get()
+    const { mode, page, pageCount, widePages, spreadOffset, setPage } = get()
     if (mode !== 'double' || pageCount <= 0) {
       setPage(page - 1)
       return
     }
-    const spread = spreadPages(page, pageCount, false, widePages)
+    const spread = spreadPages(page, pageCount, false, widePages, spreadOffset)
     setPage(Math.min(...spread) - 1)
   },
 
@@ -106,11 +110,14 @@ export function atLastScreen(
   page: number,
   pageCount: number,
   mode: ReaderMode,
-  widePages: number[] = []
+  widePages: number[] = [],
+  spreadOffset = 0
 ): boolean {
   if (pageCount <= 0) return false
   if (mode !== 'double') return page >= pageCount - 1
-  return Math.max(...spreadPages(page, pageCount, false, widePages)) >= pageCount - 1
+  return (
+    Math.max(...spreadPages(page, pageCount, false, widePages, spreadOffset)) >= pageCount - 1
+  )
 }
 
 /**
@@ -130,12 +137,15 @@ export function resumeStartPage(
  * double 模式下当前 spread 展示的页索引数组（rtl 只决定返回数组内的左右顺序）。
  * 约定：第 0 页（封面）单独展示，之后按阅读顺序两两配对；
  * wide 中的跨页大图单独占一屏，它后面的配对从下一页重新开始。
+ * spreadOffset（C 键切换的「跨页配对」）：1 = 第 1 页也单独展示，配对从第 2 页开始，
+ * 用于修正「正文第一页其实是独立扉页」这类自动配对落空的情形。
  */
 export function spreadPages(
   page: number,
   pageCount: number,
   rtl: boolean,
-  wide: number[] = []
+  wide: number[] = [],
+  spreadOffset = 0
 ): number[] {
   // 页数未知时退化为单页，避免双页模式下整屏空白
   if (pageCount <= 0) return [Math.max(page, 0)]
@@ -144,6 +154,10 @@ export function spreadPages(
   const isWide = (p: number): boolean => wide.includes(p)
   // 从第 1 页开始沿阅读顺序模拟配对，找到包含 page 的那一屏
   let i = 1
+  if (spreadOffset === 1) {
+    if (page === 1) return [1]
+    i = 2
+  }
   while (i < pageCount) {
     if (isWide(i)) {
       if (page === i) return [i]

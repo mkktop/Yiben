@@ -7,3 +7,6 @@ dist/
 
 # tsc 增量构建缓存
 *.tsbuildinfo
+
+# WorkBuddy 工具的项目数据目录（非项目代码）
+.workbuddy/

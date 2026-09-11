@@ -7,15 +7,22 @@ import { PdfViewer } from './PdfViewer'
 import { ReaderChrome } from './ReaderChrome'
 import { useReaderStore, atLastScreen, resumeStartPage, type ReaderMode } from '@/stores/reader'
 import { useDataStore } from '@/stores/data'
-import type { BookmarkInfo, ReaderChapterInfo } from '@shared/types'
+import { pageUrl, type BookmarkInfo, type ReaderChapterInfo } from '@shared/types'
 
 const IDLE_MS = 2200
 
 interface Neighbors {
   index: number
   total: number
-  prev: { id: number; title: string; page_count: number } | null
-  next: { id: number; title: string; page_count: number } | null
+  prev: { id: number; title: string; page_count: number; kind: string } | null
+  next: { id: number; title: string; page_count: number; kind: string } | null
+}
+
+/** 底部短暂浮出的提示（方向提示 / 跨页配对反馈） */
+export interface ReaderHint {
+  kind: 'direction' | 'text'
+  rtl?: boolean
+  text?: string
 }
 
 export function ReaderPage() {
@@ -54,6 +61,10 @@ export function ReaderPage() {
   const initFor = useRef<number | null>(null)
   /** 初始化完成的章节：在此之前不写进度，避免用默认页数误判「已读完」 */
   const readyFor = useRef<number | null>(null)
+  /** 方向提示每次进入阅读器只展示一次 */
+  const dirHintShown = useRef(false)
+  /** 底部提示浮层（阅读方向 / 跨页配对反馈） */
+  const [hint, setHint] = useState<ReaderHint | null>(null)
 
   const chapter = info?.chapter ?? null
   const activeId = chapter?.id ?? 0
@@ -77,6 +88,12 @@ export function ReaderPage() {
       ])
       useReaderStore.getState().init({ ...defaults, ...prefs }, chapter.page_count, startPage)
       readyFor.current = chapter.id
+      // 方向提示：每次进入阅读器提示一次；条漫纵向阅读没有方向
+      if (!dirHintShown.current) {
+        dirHintShown.current = true
+        const s = useReaderStore.getState()
+        if (s.mode !== 'webtoon') setHint({ kind: 'direction', rtl: s.rtl })
+      }
       // 用完即清，避免返回再进时又跳到深链页
       if (deepPage != null) {
         search.delete('p')
@@ -125,29 +142,36 @@ export function ReaderPage() {
   }, [activeId])
 
   const openChapter = useCallback(
-    (id: number) => {
+    (id: number, atPage1based?: number) => {
       // flush 由卸载兜底；先清 init 标记让新章节重新初始化
       flush()
-      navigate(`/reader/${id}`)
+      navigate(atPage1based != null ? `/reader/${id}?p=${atPage1based}` : `/reader/${id}`)
     },
-    [navigate]
+    [navigate, flush]
   )
 
   /** 越界感知的下一页：当前屏已含末页时进下一话（双页模式最后一屏可能是两页） */
   const goNext = useCallback(() => {
     const s = useReaderStore.getState()
-    if (atLastScreen(s.page, s.pageCount, s.mode, s.widePages) && neighborsRef.current?.next) {
+    if (
+      atLastScreen(s.page, s.pageCount, s.mode, s.widePages, s.spreadOffset) &&
+      neighborsRef.current?.next
+    ) {
       openChapter(neighborsRef.current.next.id)
       return
     }
     s.next()
   }, [openChapter])
 
-  /** 越界感知的上一页：首页回上一话（落点由其保存的进度决定） */
+  /**
+   * 越界感知的上一页：首页回上一话。
+   * 回退跨话落在上一话末页（?p= 深链），倒着读才连贯；页数未知时退回普通入口。
+   */
   const goPrev = useCallback(() => {
     const s = useReaderStore.getState()
-    if (s.page <= 0 && neighborsRef.current?.prev) {
-      openChapter(neighborsRef.current.prev.id)
+    const prev = neighborsRef.current?.prev
+    if (s.page <= 0 && prev) {
+      openChapter(prev.id, prev.page_count > 0 ? prev.page_count : undefined)
       return
     }
     s.prev()
@@ -246,6 +270,58 @@ export function ReaderPage() {
   // 离开阅读器时补写最后一次进度
   useEffect(() => () => flush(), [flush])
 
+  // 刷新/关闭窗口时渲染进程直接销毁，unmount 清理不保证执行，用 pagehide 补写
+  useEffect(() => {
+    const onHide = (): void => flush()
+    window.addEventListener('pagehide', onHide)
+    return () => window.removeEventListener('pagehide', onHide)
+  }, [flush])
+
+  // 提示浮层自动消失
+  useEffect(() => {
+    if (!hint) return
+    const timer = setTimeout(() => setHint(null), 2400)
+    return () => clearTimeout(timer)
+  }, [hint])
+
+  // ---------- 跨页配对（双页模式下 C 键切换，按系列记忆） ----------
+
+  const toggleSpreadOffset = useCallback(() => {
+    const s = useReaderStore.getState()
+    if (s.mode !== 'double') {
+      setHint({ kind: 'text', text: '跨页配对在双页模式下可用（M 切换）' })
+      return
+    }
+    const next = s.spreadOffset === 1 ? 0 : 1
+    s.patch({ spreadOffset: next })
+    setHint({
+      kind: 'text',
+      text:
+        next === 1
+          ? '跨页配对：第 1 页单独，之后两两配对'
+          : '跨页配对：从第 1 页起两两配对'
+    })
+    if (chapter) {
+      void window.yiben.reader.setPrefs(chapter.series_id, { spreadOffset: next })
+    }
+  }, [chapter])
+
+  // ---------- 邻话预取（跨话切换首屏零等待；PDF 走 pdfjs，不走图片协议） ----------
+
+  useEffect(() => {
+    if (!neighbors) return
+    const warm = (ch: { id: number; page_count: number; kind: string } | null, pages: number[]): void => {
+      if (!ch || ch.kind === 'pdf') return
+      for (const p of pages) {
+        if (p < 0) continue
+        const img = new Image()
+        img.src = pageUrl(ch.id, p)
+      }
+    }
+    if (neighbors.next) warm(neighbors.next, [0, 1])
+    if (neighbors.prev) warm(neighbors.prev, [neighbors.prev.page_count - 1])
+  }, [neighbors])
+
   // 预加载 ±3 页（PDF 走 pdfjs，不走图片协议）
   usePagePreload(activeId, store.page, store.pageCount, 3, chapter?.kind !== 'pdf')
 
@@ -298,6 +374,8 @@ export function ReaderPage() {
     const onKey = (e: KeyboardEvent): void => {
       if ((e.target as HTMLElement)?.tagName === 'INPUT') return
       const s = useReaderStore.getState()
+      // 帮助是全屏模态：打开期间按键不穿透到阅读操作
+      if (panelRef.current === 'help' && e.key !== 'Escape' && e.key !== '?') return
 
       // 条漫是垂直阅读，翻页等价于滚到相邻页；其余模式走 spread 步进（越界进前后话）
       const step = (delta: number): void => {
@@ -323,12 +401,15 @@ export function ReaderPage() {
 
       switch (e.key) {
         case 'ArrowRight':
+        case 'ArrowDown':
         case ' ':
         case 'PageDown':
           e.preventDefault()
           step(1)
           break
         case 'ArrowLeft':
+        case 'ArrowUp':
+        case 'Backspace':
         case 'PageUp':
           e.preventDefault()
           step(-1)
@@ -345,7 +426,15 @@ export function ReaderPage() {
           break
         case 'd':
         case 'D':
-          onModeChange(s.mode === 'double' ? 'single' : 'double')
+          // 顶栏按钮/帮助面板均标注 D 为方向切换（此前误绑成单双页切换）
+          s.patch({ rtl: !s.rtl })
+          if (chapter) {
+            void window.yiben.reader.setPrefs(chapter.series_id, { rtl: !s.rtl })
+          }
+          break
+        case 'c':
+        case 'C':
+          toggleSpreadOffset()
           break
         case 'm':
         case 'M': {
@@ -375,6 +464,11 @@ export function ReaderPage() {
         case 'F':
           toggleFullscreen()
           break
+        case 'Enter':
+          // 沉浸模式：隐藏/显示界面（鼠标移动会自动恢复）
+          e.preventDefault()
+          s.toggleImmersive()
+          break
         case '?':
           e.preventDefault()
           setPanel((v) => (v === 'help' ? 'none' : 'help'))
@@ -391,7 +485,18 @@ export function ReaderPage() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onModeChange, toggleFullscreen, toggleBookmark, goNext, goPrev, jumpTo, activeId, goBack])
+  }, [
+    onModeChange,
+    toggleFullscreen,
+    toggleBookmark,
+    toggleSpreadOffset,
+    goNext,
+    goPrev,
+    jumpTo,
+    activeId,
+    chapter,
+    goBack
+  ])
 
   if (error) {
     return (
@@ -444,6 +549,9 @@ export function ReaderPage() {
         onToggleBookmark={toggleBookmark}
         onJump={jumpTo}
         onBack={goBack}
+        onToggleSpreadOffset={toggleSpreadOffset}
+        hint={hint}
+        onHintClose={() => setHint(null)}
         panel={panel}
         onPanelChange={setPanel}
       />

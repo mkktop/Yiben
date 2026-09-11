@@ -654,6 +654,8 @@ export interface NeighborChapter {
   id: number
   title: string
   page_count: number
+  /** 章节类型（local/archive/pdf…），邻话预取时跳过 pdf */
+  kind: string
 }
 
 export interface Neighbors {
@@ -671,7 +673,7 @@ export function neighborChapters(chapterId: number): Neighbors | null {
   if (!row) return null
   const all = db
     .prepare(
-      'SELECT id, title, page_count FROM chapters WHERE series_id = ? ORDER BY sort_index'
+      'SELECT id, title, page_count, kind FROM chapters WHERE series_id = ? ORDER BY sort_index'
     )
     .all(row.series_id) as NeighborChapter[]
   const index = all.findIndex((c) => c.id === chapterId)

@@ -19,11 +19,14 @@ import { useReaderStore, spreadPages, atLastScreen, type ReaderMode } from '@/st
 import { pageThumbUrl, type BookmarkInfo } from '@shared/types'
 import { cn } from '@/lib/utils'
 import { WindowControls } from '@/components/layout/WindowControls'
+import { KeyboardHelp } from './KeyboardHelp'
+import type { ReaderHint } from './ReaderPage'
 
 interface NeighborChapter {
   id: number
   title: string
   page_count: number
+  kind: string
 }
 
 export interface ReaderChromeProps {
@@ -46,6 +49,11 @@ export interface ReaderChromeProps {
   onJump: (chapterId: number, page0: number) => void
   /** 返回（ReaderPage 持有，带兜底逻辑） */
   onBack: () => void
+  /** 跨页配对切换（C 键与顶栏按钮共用） */
+  onToggleSpreadOffset: () => void
+  /** 底部提示浮层（阅读方向 / 跨页配对反馈），ReaderPage 持有状态 */
+  hint: ReaderHint | null
+  onHintClose: () => void
   /** 浮层面板（快捷键与按钮共用同一状态，由 ReaderPage 持有） */
   panel: 'none' | 'bookmarks' | 'help'
   onPanelChange: (p: 'none' | 'bookmarks' | 'help') => void
@@ -73,6 +81,9 @@ export function ReaderChrome({
   onToggleBookmark,
   onJump,
   onBack,
+  onToggleSpreadOffset,
+  hint,
+  onHintClose,
   panel,
   onPanelChange
 }: ReaderChromeProps) {
@@ -84,6 +95,7 @@ export function ReaderChrome({
     page,
     pageCount,
     widePages,
+    spreadOffset,
     immersive,
     showThumbs,
     setPage,
@@ -91,7 +103,7 @@ export function ReaderChrome({
     toggleThumbs
   } = useReaderStore()
 
-  const spread = spreadPages(page, pageCount, rtl, widePages)
+  const spread = spreadPages(page, pageCount, rtl, widePages, spreadOffset)
   const lo = Math.min(...spread) + 1
   const hi = Math.max(...spread) + 1
   const currentDisplay =
@@ -99,7 +111,7 @@ export function ReaderChrome({
       ? `${page + 1} / ${pageCount}`
       : `${lo}-${hi} / ${pageCount}`
   // 与 ReaderPage.goNext 的边界判定共用同一函数：末页卡片出现的时机 = 翻页会进下一话的时机
-  const atEnd = atLastScreen(page, pageCount, mode, widePages)
+  const atEnd = atLastScreen(page, pageCount, mode, widePages, spreadOffset)
 
   return (
     <>
@@ -168,6 +180,15 @@ export function ReaderChrome({
         >
           <ArrowRightToLine className={cn(rtl && 'scale-x-[-1]')} />
         </IconBtn>
+        {mode === 'double' && canThumbnail && (
+          <IconBtn
+            title={`跨页配对（C）：${spreadOffset === 1 ? '第 1 页单独' : '从第 1 页起两两配对'}`}
+            active={spreadOffset === 1}
+            onClick={onToggleSpreadOffset}
+          >
+            <SpreadGlyph />
+          </IconBtn>
+        )}
         <IconBtn
           title={`适配：${fit === 'width' ? '适宽' : fit === 'height' ? '适高' : '原始'}（S 切换）`}
           onClick={() =>
@@ -305,40 +326,46 @@ export function ReaderChrome({
         </Panel>
       )}
 
-      {/* 快捷键帮助 */}
-      {panel === 'help' && (
-        <Panel title="快捷键" onClose={() => onPanelChange('none')}>
-          <div className="grid gap-x-6 gap-y-2 px-4 py-3 text-xs sm:grid-cols-2">
-            {SHORTCUTS.map(([keys, desc]) => (
-              <div key={keys} className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">{desc}</span>
-                <kbd className="shrink-0 rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px]">
-                  {keys}
-                </kbd>
+      {/* 提示浮层：进入阅读器时的方向提示 / 跨页配对操作反馈 */}
+      {hint && (
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-24 z-30 flex justify-center"
+          onClick={onHintClose}
+        >
+          {hint.kind === 'direction' ? (
+            <div className="hint-pop pointer-events-auto flex flex-col items-center gap-2 rounded-xl border border-white/15 bg-black/80 px-8 py-5 text-white shadow-2xl backdrop-blur">
+              <div className={cn('flex items-center gap-1 text-primary', hint.rtl && 'scale-x-[-1]')}>
+                <span className="text-2xl leading-none">→</span>
+                <span className="text-2xl leading-none">📖</span>
               </div>
-            ))}
-          </div>
-        </Panel>
+              <p className="text-sm font-medium">
+                翻页方向：{hint.rtl ? '从右往左（日漫）' : '从左往右（西漫）'}
+              </p>
+              <p className="text-xs text-white/50">点击区域与翻页键都跟随这个方向，D 键可切换</p>
+            </div>
+          ) : (
+            <div className="hint-pop pointer-events-auto rounded-full border border-white/15 bg-black/80 px-5 py-2.5 text-sm text-white shadow-2xl backdrop-blur">
+              {hint.text}
+            </div>
+          )}
+        </div>
       )}
+
+      {/* 快捷键帮助：居中模态键盘图 */}
+      {panel === 'help' && <KeyboardHelp onClose={() => onPanelChange('none')} />}
     </>
   )
 }
 
-const SHORTCUTS: Array<[string, string]> = [
-  ['← → / 空格', '翻页（键盘到末页进下一话）'],
-  ['Home / End', '第一页 / 最后一页'],
-  ['点击左右 1/3', '上一页 / 下一页（不跨话）'],
-  ['Ctrl + 滚轮', '缩放'],
-  ['M', '单页 / 双页 / 条漫'],
-  ['D', '日漫 / 西漫方向'],
-  ['S', '适宽 / 适高 / 原始'],
-  ['R', '旋转 90°'],
-  ['T', '缩略图条'],
-  ['B', '收藏 / 取消当前页书签'],
-  ['F', '全屏'],
-  ['Esc', '退出全屏 / 返回'],
-  ['?', '快捷键帮助']
-]
+/** 跨页配对图标：两页并排加一条错位分隔线 */
+function SpreadGlyph(): ReactNode {
+  return (
+    <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="5" width="8" height="14" rx="1" />
+      <rect x="13" y="5" width="8" height="14" rx="1" strokeDasharray="3 2" />
+    </svg>
+  )
+}
 
 /** 书签集合图标（顶栏） */
 function BookmarksGlyph(): ReactNode {
