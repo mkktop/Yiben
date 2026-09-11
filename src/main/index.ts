@@ -5,6 +5,7 @@ import { is } from '@electron-toolkit/utils'
 import { openDb } from './db'
 import { registerProtocol, attachProtocolHandlers } from './protocol'
 import { registerIpc } from './ipc'
+import { broadcast } from './events'
 import { runSelfTest } from './selftest'
 import { getSetting, setSetting } from './settings'
 import { startWatchers } from './watcher'
@@ -92,6 +93,8 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 640,
     show: false,
+    // 无边框：标题栏由渲染层顶栏承担（app-region 拖拽 + 自绘控制按钮）
+    frame: false,
     backgroundColor: '#171412',
     autoHideMenuBar: true,
     webPreferences: {
@@ -102,6 +105,11 @@ function createWindow(): void {
     }
   })
   if (saved?.maximized) mainWindow.maximize()
+
+  // 最大化状态推给渲染层，WindowControls 切换 最大化/还原 图标
+  const pushMaximized = (): void => broadcast('window:maximized', mainWindow.isMaximized())
+  mainWindow.on('maximize', pushMaximized)
+  mainWindow.on('unmaximize', pushMaximized)
 
   // getNormalBounds 在最大化时返回还原后的尺寸，恢复时不糊
   mainWindow.on('close', () => {

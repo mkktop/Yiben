@@ -1,4 +1,4 @@
-import { dialog, ipcMain } from 'electron'
+import { BrowserWindow, dialog, ipcMain } from 'electron'
 import { readFile } from 'fs/promises'
 import {
   addLibrary,
@@ -66,6 +66,20 @@ function errText(err: unknown): string {
 const CONFIG_KEYS = new Set(['readerDefaults', 'resumeOnLaunch', 'autoRescan'])
 
 export function registerIpc(): void {
+  // 无边框窗口的控制按钮（渲染层自绘，见 WindowControls）
+  ipcMain.handle('appWindow:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize())
+  ipcMain.handle('appWindow:toggleMaximize', (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win) return false
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+    return win.isMaximized()
+  })
+  ipcMain.handle('appWindow:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close())
+  ipcMain.handle('appWindow:isMaximized', (e) =>
+    BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
+  )
+
   ipcMain.handle('libraries:list', () => listLibraries())
 
   ipcMain.handle('libraries:add', async (): Promise<LibraryRow | null> => {

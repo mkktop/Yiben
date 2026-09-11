@@ -18,6 +18,7 @@ import {
 import { useReaderStore, spreadPages, atLastScreen, type ReaderMode } from '@/stores/reader'
 import { pageThumbUrl, type BookmarkInfo } from '@shared/types'
 import { cn } from '@/lib/utils'
+import { WindowControls } from '@/components/layout/WindowControls'
 
 interface NeighborChapter {
   id: number
@@ -105,14 +106,14 @@ export function ReaderChrome({
       {/* 顶栏 */}
       <div
         className={cn(
-          'absolute inset-x-0 top-0 z-20 flex h-12 items-center gap-2 px-4 transition-opacity duration-300',
-          'bg-gradient-to-b from-black/80 to-black/0 text-white',
+          'absolute inset-x-0 top-0 z-20 flex h-12 items-center gap-2 pl-4 transition-opacity duration-300',
+          'bg-gradient-to-b from-black/80 to-black/0 text-white [-webkit-app-region:drag]',
           immersive ? 'pointer-events-none opacity-0' : 'opacity-100'
         )}
       >
         <button
           onClick={onBack}
-          className="grid size-8 place-items-center rounded-md hover:bg-white/10"
+          className="grid size-8 place-items-center rounded-md [-webkit-app-region:no-drag] hover:bg-white/10"
           title="返回 (Esc)"
         >
           <ArrowLeft className="size-4" />
@@ -194,6 +195,7 @@ export function ReaderChrome({
         <IconBtn title={isFullscreen ? '退出全屏' : '全屏（F）'} onClick={toggleFullscreen}>
           {isFullscreen ? <Minimize /> : <Maximize />}
         </IconBtn>
+        <WindowControls variant="overlay" />
       </div>
 
       {/* 模式切换（左下悬浮） */}
@@ -376,7 +378,7 @@ function PageJump({
   if (!editing) {
     return (
       <button
-        className="shrink-0 rounded px-1.5 py-1 text-xs text-white/70 tabular-nums hover:bg-white/10 hover:text-white"
+        className="shrink-0 rounded px-1.5 py-1 text-xs text-white/70 tabular-nums [-webkit-app-region:no-drag] hover:bg-white/10 hover:text-white"
         title="点击输入页码跳转"
         onClick={() => setEditing(true)}
       >
@@ -403,7 +405,7 @@ function PageJump({
         if (e.key === 'Escape') setEditing(false)
         e.stopPropagation()
       }}
-      className="w-16 shrink-0 rounded border border-white/30 bg-black/60 px-1.5 py-1 text-center text-xs text-white tabular-nums outline-none"
+      className="w-16 shrink-0 rounded border border-white/30 bg-black/60 px-1.5 py-1 text-center text-xs text-white tabular-nums outline-none [-webkit-app-region:no-drag]"
     />
   )
 }
@@ -441,7 +443,7 @@ function IconBtn({
       title={title}
       onClick={onClick}
       className={cn(
-        'grid size-8 place-items-center rounded-md text-white/85 hover:bg-white/10 [&_svg]:size-4',
+        'grid size-8 place-items-center rounded-md text-white/85 [-webkit-app-region:no-drag] hover:bg-white/10 [&_svg]:size-4',
         active && 'bg-white/20 text-white'
       )}
     >

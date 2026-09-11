@@ -5,6 +5,7 @@ import { useThemeStore } from '@/stores/theme'
 import { useDataStore } from '@/stores/data'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { WindowControls } from '@/components/layout/WindowControls'
 import { cn } from '@/lib/utils'
 
 const navItems = [
@@ -38,7 +39,7 @@ export function AppShell() {
   return (
     <div className="flex h-screen overflow-hidden">
       <aside className="flex w-56 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
-        <div className="flex h-14 items-center gap-2.5 px-5">
+        <div className="flex h-14 items-center gap-2.5 px-5 [-webkit-app-region:drag]">
           <div className="grid size-8 place-items-center rounded-lg bg-primary font-serif text-lg font-bold text-primary-foreground">
             一
           </div>
@@ -71,8 +72,8 @@ export function AppShell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border/60 bg-background px-6">
-          <div className="relative w-full max-w-md">
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border/60 bg-background pl-6 [-webkit-app-region:drag]">
+          <div className="relative w-full max-w-md [-webkit-app-region:no-drag]">
             <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground/70" />
             <Input
               ref={searchRef}
@@ -103,15 +104,18 @@ export function AppShell() {
             )}
           </div>
           <div className="flex-1" />
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={toggle}
-            title="切换主题"
-            className="rounded-full text-muted-foreground hover:text-foreground"
-          >
-            {mode === 'dark' ? <Sun className="size-5" /> : <Moon className="size-5" />}
-          </Button>
+          <div className="flex h-full items-center gap-1.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggle}
+              title="切换主题"
+              className="mr-1 rounded-full text-muted-foreground hover:text-foreground"
+            >
+              {mode === 'dark' ? <Sun className="size-5" /> : <Moon className="size-5" />}
+            </Button>
+            <WindowControls />
+          </div>
         </header>
         <main className="flex-1 overflow-y-auto">
           <Outlet />

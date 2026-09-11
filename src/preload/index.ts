@@ -3,6 +3,20 @@ import { electronAPI } from '@electron-toolkit/preload'
 import type { CloudNotice, PrefetchDone, PrefetchProgress } from '../shared/types'
 
 const api = {
+  appWindow: {
+    minimize: (): Promise<void> => ipcRenderer.invoke('appWindow:minimize'),
+    toggleMaximize: (): Promise<boolean> => ipcRenderer.invoke('appWindow:toggleMaximize'),
+    close: (): Promise<void> => ipcRenderer.invoke('appWindow:close'),
+    isMaximized: (): Promise<boolean> => ipcRenderer.invoke('appWindow:isMaximized'),
+    /** 无边框窗口的最大化状态（WindowControls 切图标用） */
+    onMaximizeChange: (cb: (maximized: boolean) => void) => {
+      const listener = (_e: unknown, maximized: boolean): void => cb(maximized)
+      ipcRenderer.on('window:maximized', listener)
+      return (): void => {
+        ipcRenderer.removeListener('window:maximized', listener)
+      }
+    }
+  },
   libraries: {
     list: () => ipcRenderer.invoke('libraries:list'),
     add: () => ipcRenderer.invoke('libraries:add'),
