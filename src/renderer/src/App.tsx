@@ -9,6 +9,7 @@ import { SeriesPage } from './routes/SeriesPage'
 import { ReaderPage } from './routes/reader/ReaderPage'
 import { SettingsPage } from './routes/SettingsPage'
 import { CloudPage } from './routes/CloudPage'
+import { StatsPage } from './routes/StatsPage'
 import { useUpdateStore } from './stores/update'
 
 /** 每次应用会话只自动恢复一次：effect 因任何原因重跑（StrictMode/HMR）都不再二次推入 */
@@ -68,10 +69,28 @@ function LaunchResume() {
   return null
 }
 
+/** 双击漫画文件（系统文件关联）打开：主进程解析出章节 id 后进阅读器 */
+function OpenFileBridge() {
+  const navigate = useNavigate()
+  useEffect(() => {
+    const open = (chapterId: number | null): void => {
+      if (chapterId == null) return
+      // 打开文件优先：「启动时恢复上次阅读」必须让位，否则冷启动双击会被抢跳回上一话
+      resumedInSession = true
+      navigate(`/reader/${chapterId}`)
+    }
+    // 冷启动暂存的章节可能在组件挂载前就广播过，先领取一次再挂监听
+    void window.yiben.openFile.take().then(open)
+    return window.yiben.events.onOpenFile(({ chapterId }) => open(chapterId))
+  }, [navigate])
+  return null
+}
+
 export default function App() {
   return (
     <HashRouter>
       <LaunchResume />
+      <OpenFileBridge />
       <UpdateBootstrap />
       <Routes>
         <Route element={<AppShell />}>
@@ -80,6 +99,7 @@ export default function App() {
           <Route path="/series/:id" element={<SeriesPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/cloud" element={<CloudPage />} />
+          <Route path="/stats" element={<StatsPage />} />
         </Route>
         <Route path="/reader/:chapterId" element={<ReaderPage />} />
       </Routes>

@@ -21,6 +21,8 @@ export interface PrefetchProgress {
 
 interface PrefetchTask {
   cancel: boolean
+  /** 取消时 abort：进行中的整包下载经 AbortSignal 立即中断，不再占带宽和下载槽 */
+  ctrl: AbortController
 }
 
 /** 每个系列同一时间只允许一个预取任务 */
@@ -33,9 +35,9 @@ export function prefetchRunning(): number[] {
 /** 单章下载；瞬时失败按指数退避重试，仍失败返回章节标题（不中断整个系列） */
 async function ensureChapterWithRetry(
   ch: { id: number; kind: string; page_count: number; path: string; title: string },
-  familyId: string | undefined,
-  cancelled: () => boolean
+  task: PrefetchTask
 ): Promise<string | null> {
+  const cancelled = (): boolean => task.cancel
   for (let attempt = 0; ; attempt++) {
     if (cancelled()) return null
     try {
@@ -45,16 +47,22 @@ async function ensureChapterWithRetry(
           if (cancelled()) return null
           const page = getChapterPageFile(ch.id, p)
           if (!page) break
-          await ensureChapterPage(ch.id, p, familyId)
+          await ensureChapterPage(ch.id, p, task.ctrl.signal)
         }
       } else {
         // 压缩包/PDF：整包下载
-        if (!existsSync(longPath(ch.path))) await ensureLocalChapterPath(ch.id)
+        if (!existsSync(longPath(ch.path))) {
+          await ensureLocalChapterPath(ch.id, task.ctrl.signal)
+        }
       }
       return null
     } catch (err) {
-      // 会话失效重试无意义：交给 UI 引导重新登录，整体中止
-      if (noteCloudError(err) === 'session') throw err
+      if (cancelled()) return null
+      // 会话失效重试无意义：交给 UI 引导重新登录，整体中止（含 115 的会话报错）
+      const msg = err instanceof Error ? err.message : String(err)
+      if (noteCloudError(err) === 'session' || /115 网盘未登录|115 网盘登录已失效|990001/.test(msg)) {
+        throw err
+      }
       if (attempt >= 2) return ch.title
       await sleep(backoffDelay(attempt))
     }
@@ -72,14 +80,14 @@ export function startPrefetch(seriesId: number): PrefetchProgress {
   const series = getSeries(seriesId)
   if (!series) throw new Error(`系列不存在：${seriesId}`)
   const lib = getLibrary(series.library_id)
-  if (lib?.kind !== 'cloud189') throw new Error('只有云端书库的漫画可以离线缓存')
+  if (lib?.kind === 'local') throw new Error('只有云端书库的漫画可以离线缓存')
 
   const chapters = chaptersBySeries(seriesId).filter(
     (c) => c.kind === 'cfolder' || c.cloud_file_id
   )
   if (chapters.length === 0) throw new Error('没有可缓存的云端章节')
 
-  const task: PrefetchTask = { cancel: false }
+  const task: PrefetchTask = { cancel: false, ctrl: new AbortController() }
   running.set(seriesId, task)
   const progress: PrefetchProgress = { seriesId, done: 0, total: chapters.length, chapterTitle: '' }
   broadcast('prefetch:progress', progress)
@@ -92,8 +100,7 @@ export function startPrefetch(seriesId: number): PrefetchProgress {
         const ch = chapters[i]
         progress.chapterTitle = ch.title
         broadcast('prefetch:progress', { ...progress })
-        const familyId = lib.family_id ?? undefined
-        const bad = await ensureChapterWithRetry(ch, familyId, () => task.cancel)
+        const bad = await ensureChapterWithRetry(ch, task)
         if (bad) failed.push(bad)
         progress.done = i + 1
         broadcast('prefetch:progress', { ...progress })
@@ -121,5 +128,7 @@ export function cancelPrefetch(seriesId: number): boolean {
   const task = running.get(seriesId)
   if (!task) return false
   task.cancel = true
+  // 进行中的下载也一并中断（整包下载可能还要跑几十秒到几分钟）
+  task.ctrl.abort()
   return true
 }

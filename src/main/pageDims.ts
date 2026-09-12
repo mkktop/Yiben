@@ -1,5 +1,5 @@
 import sharp from 'sharp'
-import { getChapter, getChapterSource, getPageDims, savePageDims, type PageDim } from './db'
+import { getChapter, getPageDims, savePageDims, type PageDim } from './db'
 import { ensureChapterPage, readEnsuredPage } from './cloud189/ensure'
 import { broadcast } from './events'
 
@@ -46,8 +46,6 @@ export function ensurePageDims(chapterId: number): { dims: PageDim[]; probing: b
 async function probe(chapterId: number, missing: number[]): Promise<PageDim[]> {
   const ch = getChapter(chapterId)
   if (!ch) return []
-  const src = getChapterSource(chapterId)
-  const familyId = src?.familyId ?? undefined
   const out: PageDim[] = []
 
   // 简单并发窗口：按 CONCURRENCY 分批顺序推进，每批落库 + 广播
@@ -55,7 +53,7 @@ async function probe(chapterId: number, missing: number[]): Promise<PageDim[]> {
     const batch = missing.slice(i, i + BATCH)
     const results = await mapLimited(batch, CONCURRENCY, async (idx) => {
       try {
-        const ensured = await ensureChapterPage(chapterId, idx, familyId)
+        const ensured = await ensureChapterPage(chapterId, idx)
         const buf = await readEnsuredPage(ensured, idx)
         const meta = await sharp(buf).metadata()
         if (meta.width && meta.height) return { idx, w: meta.width, h: meta.height }

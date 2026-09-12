@@ -40,10 +40,16 @@ export async function buildPageThumb(
   await mkdir(longPath(dir), { recursive: true })
   const out = pageThumbPath(chapterId, index)
   const tmp = `${out}.part.webp`
-  await sharp(src)
-    .resize(THUMB_WIDTH, null, { withoutEnlargement: true })
-    .webp({ quality: 70 })
-    .toFile(longPath(tmp))
+  try {
+    await sharp(src)
+      .resize(THUMB_WIDTH, null, { withoutEnlargement: true })
+      .webp({ quality: 70 })
+      .toFile(longPath(tmp))
+  } catch (err) {
+    // 失败时清掉半成品：否则残留在目录里被 prune 计入容量，还永远等不到改名
+    await rm(longPath(tmp), { force: true }).catch(() => {})
+    throw err
+  }
   await rename(longPath(tmp), longPath(out))
 
   if (++built >= PRUNE_EVERY) {

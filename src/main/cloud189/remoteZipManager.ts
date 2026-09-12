@@ -1,6 +1,5 @@
 import { RemoteZip } from '../archives/remoteZip'
 import { rangeFetch } from '../archives/remoteZip'
-import { cloudDownloadUrl } from './client'
 
 /**
  * 按章节缓存 RemoteZip 实例（含已解析的中央目录）。
@@ -10,10 +9,13 @@ import { cloudDownloadUrl } from './client'
 const MAX_INSTANCES = 8
 const cache = new Map<number, RemoteZip>()
 
+/**
+ * resolveUrl 每次调用都取当前直链（直链有时效）：建实例时取一次，
+ * 403/410 过期时 refresh 回调里再取新链。各网盘（天翼/115）各自提供。
+ */
 export async function getRemoteZip(
   chapterId: number,
-  fileId: string,
-  familyId: string | undefined,
+  resolveUrl: () => Promise<string>,
   expectedSize: number
 ): Promise<RemoteZip> {
   const hit = cache.get(chapterId)
@@ -25,12 +27,12 @@ export async function getRemoteZip(
   }
 
   // fetchRange 每次调用都读当前 url：refresh() 重新赋值后，后续读取自动用新直链
-  let url = await cloudDownloadUrl(fileId, familyId)
+  let url = await resolveUrl()
   const zip = await RemoteZip.create(
     expectedSize,
     (start, end) => rangeFetch(url, start, end),
     async () => {
-      url = await cloudDownloadUrl(fileId, familyId)
+      url = await resolveUrl()
     }
   )
   cache.set(chapterId, zip)

@@ -1,8 +1,7 @@
 import { isAbsolute, join, relative } from 'path'
 import { mkdir, readdir, rm, stat } from 'fs/promises'
 import { cloudChapterRows, type CloudChapterCacheRow } from '../db'
-import { cloudCacheDir } from './client'
-import { pruneIndex, resetIndex } from './cache'
+import { cloudCacheRoots, pruneIndex, resetIndex } from './cache'
 import { longPath } from '../util/paths'
 
 export interface SeriesCache {
@@ -33,15 +32,21 @@ async function pathSize(p: string): Promise<number> {
   return total
 }
 
-/** 路径是否在缓存目录内（斜杠方向差异由 relative 归一化处理） */
+/** 路径是否在任一网盘缓存目录内（斜杠方向差异由 relative 归一化处理） */
 function insideCache(p: string): boolean {
-  const r = relative(cloudCacheDir(), p)
-  return r !== '' && !r.startsWith('..') && !isAbsolute(r)
+  return cloudCacheRoots().some((root) => {
+    const r = relative(root, p)
+    return r !== '' && !r.startsWith('..') && !isAbsolute(r)
+  })
 }
 
-/** 章节对应的缓存产物：散图=页目录，压缩包/PDF=整包文件 */
+/**
+ * 章节对应的缓存产物：散图=页目录，压缩包/PDF=整包文件。
+ * 散图章节的 path 存的是 `<缓存根>/f-{云端目录id}`（身份标识），
+ * 阅读时按页下载的页目录是同级的 `f-{章节id}`，两者不同，取父目录拼接。
+ */
 function artifactsOf(row: CloudChapterCacheRow): string[] {
-  if (row.kind === 'cfolder') return [join(cloudCacheDir(), `f-${row.chapterId}`)]
+  if (row.kind === 'cfolder') return [join(join(row.path, '..'), `f-${row.chapterId}`)]
   if (row.cloudFileId && insideCache(row.path)) return [row.path]
   return []
 }
@@ -74,12 +79,14 @@ export async function clearSeriesCache(seriesId: number): Promise<number> {
   return cleared
 }
 
-/** 清空整个云端缓存目录，返回清掉的字节数 */
+/** 清空所有网盘的缓存目录，返回清掉的字节数 */
 export async function clearAllCache(): Promise<number> {
-  const dir = cloudCacheDir()
-  const cleared = await pathSize(dir)
-  await rm(longPath(dir), { recursive: true, force: true }).catch(() => {})
-  await mkdir(longPath(dir), { recursive: true })
+  let cleared = 0
+  for (const dir of cloudCacheRoots()) {
+    cleared += await pathSize(dir)
+    await rm(longPath(dir), { recursive: true, force: true }).catch(() => {})
+    await mkdir(longPath(dir), { recursive: true })
+  }
   resetIndex()
   return cleared
 }

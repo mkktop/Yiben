@@ -56,10 +56,9 @@ async function readChapterPage(
   const chapter = getChapter(chapterId)
   if (!chapter) throw new HttpError(404, 'chapter not found')
 
-  // 云盘章节：家庭云必须带 familyId
+  // 云盘章节：按需下载（散图按页、压缩包整包/远程直读），分派在 ensure 层按书库类型走
   if (chapter.kind === 'cfolder' || chapter.cloud_file_id) {
-    const src = getChapterSource(chapterId)
-    const result = await ensureChapterPage(chapterId, index, src?.familyId ?? undefined)
+    const result = await ensureChapterPage(chapterId, index)
     return { buf: await readEnsuredPage(result, index), name: result.name ?? result.path }
   }
 
@@ -90,8 +89,8 @@ export function attachProtocolHandlers(): void {
           const chapter = coverChapterFor(seriesId)
           if (!chapter) return new Response('no cover', { status: 404 })
           const src = getChapterSource(chapter.id)
-          if (src?.libraryKind !== 'cloud189') return new Response('not found', { status: 404 })
-          await generateCloudCover(seriesId, chapter, src.familyId ?? undefined)
+          if (!src || src.libraryKind === 'local') return new Response('not found', { status: 404 })
+          await generateCloudCover(seriesId, chapter)
           const buf = await readFile(longPath(file)).catch(() => null)
           if (!buf) return new Response('cover not ready', { status: 503 })
           return new Response(new Uint8Array(buf), {

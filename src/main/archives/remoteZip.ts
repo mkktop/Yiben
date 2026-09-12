@@ -11,6 +11,15 @@ const LFH_SIG = 0x04034b50
 /** EOCD 最长 65557 字节（注释上限），一次拉尾部足够 */
 const TAIL_BYTES = 66_000
 
+/**
+ * 单条目解压上限：云端文件是不可信输入，高压缩比的 zip bomb
+ * 可在 inflateRawSync 里膨胀到 GB 级把主进程打爆（OOM 后无法靠刷新恢复）。
+ */
+const MAX_ENTRY_BYTES = 200 * 1024 * 1024
+
+/** 单次 Range 读的空闲超时：直链挂起时不能无限占用（同 cache.ts 的看门狗语义） */
+const RANGE_IDLE_TIMEOUT_MS = 30_000
+
 export class RangeUnsupportedError extends Error {
   constructor() {
     super('直链不支持 Range 请求')
@@ -84,6 +93,11 @@ export class RemoteZip {
       cdOffset = Number(eocd64.readBigUInt64LE(48))
     }
 
+    // zip64 字段没解析出来（无 locator）或目录越界时不能照单全收，
+    // 否则会发起 4GB 的巨型 Range 请求
+    if (!(cdOffset > 0 && cdSize > 0 && cdOffset + cdSize <= this.size)) {
+      throw new Error('ZIP 结构损坏：中央目录越界')
+    }
     const cd = await this.fetchRange(cdOffset, cdOffset + cdSize - 1)
     const entries: RemoteEntry[] = []
     let p = 0
@@ -159,13 +173,31 @@ export class RemoteZip {
   }
 
   private async readEntry(entry: RemoteEntry): Promise<Buffer> {
+    // 声明尺寸超限的条目直接拒绝（zip bomb 防线第一道）
+    if (entry.size > MAX_ENTRY_BYTES) {
+      throw new Error(`条目过大（${entry.size} 字节）：${entry.name}`)
+    }
+    if (entry.localOffset + 30 > this.size) {
+      throw new Error(`条目偏移越界：${entry.name}`)
+    }
     // 本地文件头：名字长度在 +26，扩展长度在 +28（本地扩展与中央目录的可能不同）
     const lfh = await this.fetchRange(entry.localOffset, entry.localOffset + 29)
     if (lfh.readUInt32LE(0) !== LFH_SIG) throw new Error(`本地头魔数不符：${entry.name}`)
+    // 零长条目（目录占位/损坏记录）没有数据段，直接返回空 Buffer，
+    // 否则起止颠倒的 Range 请求（end = start - 1）会被服务器拒绝
+    if (entry.compressedSize === 0) return Buffer.alloc(0)
     const dataStart = entry.localOffset + 30 + lfh.readUInt16LE(26) + lfh.readUInt16LE(28)
     const raw = await this.fetchRange(dataStart, dataStart + entry.compressedSize - 1)
-    if (entry.method === 0) return raw
-    if (entry.method === 8) return inflateRawSync(raw)
+    if (entry.method === 0) {
+      if (raw.length !== entry.size) throw new Error(`条目长度不符：${entry.name}`)
+      return raw
+    }
+    if (entry.method === 8) {
+      // maxOutputLength 是第二道防线：中央目录谎报 size 时解压到上限即抛错
+      const out = inflateRawSync(raw, { maxOutputLength: MAX_ENTRY_BYTES })
+      if (out.length !== entry.size) throw new Error(`条目长度不符：${entry.name}`)
+      return out
+    }
     throw new Error(`不支持的压缩方法 ${entry.method}：${entry.name}`)
   }
 
@@ -177,24 +209,41 @@ function isAuthError(err: unknown): boolean {
   return /\b403\b|\b410\b|\b401\b/.test(msg)
 }
 
-/** 单次 Range 读：校验 206、截准字节数 */
+/** 单次 Range 读：校验 206、截准字节数；持续无数据 30s 视为直链挂起 */
 export async function rangeFetch(url: string, start: number, end: number): Promise<Buffer> {
-  const resp = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } })
-  if (resp.status === 200 && start > 0) {
-    // 服务器无视 Range 头返回了整文件 → 视为不支持
-    throw new RangeUnsupportedError()
+  const ctrl = new AbortController()
+  let idleTimer: ReturnType<typeof setTimeout> | null = null
+  const armIdle = (): void => {
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => {
+      ctrl.abort(new Error(`Range 请求空闲超时（${RANGE_IDLE_TIMEOUT_MS / 1000}s 无数据）`))
+    }, RANGE_IDLE_TIMEOUT_MS)
   }
-  if (!resp.ok || !resp.body) {
-    throw new Error(`Range 请求失败：HTTP ${resp.status}`)
+  try {
+    armIdle()
+    const resp = await fetch(url, {
+      headers: { Range: `bytes=${start}-${end}` },
+      signal: ctrl.signal
+    })
+    if (resp.status === 200 && start > 0) {
+      // 服务器无视 Range 头返回了整文件 → 视为不支持
+      throw new RangeUnsupportedError()
+    }
+    if (!resp.ok || !resp.body) {
+      throw new Error(`Range 请求失败：HTTP ${resp.status}`)
+    }
+    const expected = end - start + 1
+    const chunks: Buffer[] = []
+    let received = 0
+    for await (const chunk of resp.body as unknown as AsyncIterable<Uint8Array>) {
+      armIdle()
+      const buf = Buffer.from(chunk)
+      chunks.push(buf)
+      received += buf.length
+      if (received >= expected) break
+    }
+    return Buffer.concat(chunks).subarray(0, Math.min(received, expected))
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer)
   }
-  const expected = end - start + 1
-  const chunks: Buffer[] = []
-  let received = 0
-  for await (const chunk of resp.body as unknown as AsyncIterable<Uint8Array>) {
-    const buf = Buffer.from(chunk)
-    chunks.push(buf)
-    received += buf.length
-    if (received >= expected) break
-  }
-  return Buffer.concat(chunks).subarray(0, Math.min(received, expected))
 }

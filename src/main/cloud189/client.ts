@@ -1,9 +1,11 @@
 import { app, safeStorage } from 'electron'
-import { CloudClient, FileTokenStore } from 'cloud189-sdk'
-import { rm } from 'fs/promises'
+import { CloudClient, QRCodeStatus, Store } from 'cloud189-sdk'
+import type { QRCodeData } from 'cloud189-sdk'
+import { readFile, rm, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { getSetting, setSetting } from '../settings'
 import { broadcast } from '../events'
+import { decryptSecret, encryptSecret } from '../util/secret'
 
 let client: CloudClient | null = null
 let currentUsername = ''
@@ -11,6 +13,46 @@ let currentUsername = ''
 /** 会话 token 落盘文件：accessToken（约 7 天）→ refreshToken 优先复用，都失效才密码登录 */
 function tokenFile(): string {
   return join(app.getPath('userData'), 'cloud189-token.json')
+}
+
+interface TokenRecord {
+  /** safeStorage 加密后的 base64（isEncryptionAvailable 为 false 时退回明文） */
+  accessToken: string
+  refreshToken?: string
+  expiresIn?: number
+}
+
+/**
+ * 自定义 TokenStore：token 与密码一样走 safeStorage 加密后落盘。
+ * SDK 自带的 FileTokenStore 是明文 JSON，本机任意程序都能读走 7 天有效期的会话。
+ * 旧版明文 token 文件解析不出时按无会话处理，走存储的加密凭据自动重登一次。
+ */
+class EncryptedTokenStore extends Store {
+  async get(): Promise<{ accessToken: string; refreshToken: string; expiresIn: number }> {
+    try {
+      const rec = JSON.parse(await readFile(tokenFile(), 'utf-8')) as TokenRecord
+      return {
+        accessToken: decryptSecret(rec.accessToken),
+        refreshToken: decryptSecret(rec.refreshToken ?? ''),
+        expiresIn: rec.expiresIn ?? 0
+      }
+    } catch {
+      return { accessToken: '', refreshToken: '', expiresIn: 0 }
+    }
+  }
+
+  async update(token: {
+    accessToken: string
+    refreshToken?: string
+    expiresIn?: number
+  }): Promise<void> {
+    const rec: TokenRecord = {
+      accessToken: encryptSecret(token.accessToken),
+      refreshToken: token.refreshToken ? encryptSecret(token.refreshToken) : undefined,
+      expiresIn: token.expiresIn
+    }
+    await writeFile(tokenFile(), JSON.stringify(rec), 'utf-8')
+  }
 }
 
 // ---------- 风控/会话异常识别 ----------
@@ -70,9 +112,10 @@ export function waitCloudReady(timeoutMs = 20000): Promise<boolean> {
 }
 
 interface StoredCred {
+  /** 登录名 / 扫码登录时为账号昵称 */
   username: string
-  /** safeStorage 加密后的 base64 */
-  enc: string
+  /** safeStorage 加密后的 base64（扫码登录没有密码，无此字段） */
+  enc?: string
 }
 
 const CRED_KEY = 'cloud189-cred'
@@ -81,9 +124,9 @@ export function cloudStatus(): { loggedIn: boolean; username: string } {
   return { loggedIn: client !== null, username: currentUsername }
 }
 
-/** 账号密码登录；会话 token 落盘复用，之后启动无需再走密码登录（降低风控风险） */
+/** 账号密码登录；会话 token 加密落盘复用，之后启动无需再走密码登录（降低风控风险） */
 export async function cloudLogin(username: string, password: string): Promise<void> {
-  const c = new CloudClient({ username, password, token: new FileTokenStore(tokenFile()) })
+  const c = new CloudClient({ username, password, token: new EncryptedTokenStore() })
   // 任一 API 调用会触发 SDK 自动登录（优先用持久化 token），失败则抛错
   await c.getUserSizeInfo()
   client = c
@@ -98,21 +141,112 @@ export async function cloudLogin(username: string, password: string): Promise<vo
 export async function cloudRestore(): Promise<void> {
   if (client) return
   const cred = getSetting<StoredCred | null>(CRED_KEY, null)
-  if (!cred || !safeStorage.isEncryptionAvailable()) return
+  // 优先走存了密码的恢复（密码登录用户）
+  if (cred?.enc && safeStorage.isEncryptionAvailable()) {
+    try {
+      const password = safeStorage.decryptString(Buffer.from(cred.enc, 'base64'))
+      await cloudLogin(cred.username, password)
+      return
+    } catch (err) {
+      console.warn('[cloud189] 密码恢复失败:', err instanceof Error ? err.message : err)
+    }
+  }
+  // 扫码登录用户没有存密码：仅凭加密落盘的 token 恢复会话（token 失效则保持未登录）
   try {
-    const password = safeStorage.decryptString(Buffer.from(cred.enc, 'base64'))
-    await cloudLogin(cred.username, password)
+    const store = new EncryptedTokenStore()
+    const c = new CloudClient({ token: store })
+    await c.getUserSizeInfo()
+    client = c
+    currentUsername = cred?.username ?? ''
+    notifyReady()
   } catch (err) {
-    console.warn('[cloud189] 会话恢复失败:', err instanceof Error ? err.message : err)
+    console.warn('[cloud189] token 恢复失败:', err instanceof Error ? err.message : err)
   }
 }
 
 export function cloudLogout(): void {
   client = null
   currentUsername = ''
+  qrSession = null
   setSetting<StoredCred | null>(CRED_KEY, null)
   // 会话 token 一并清掉，避免断开后仍用旧会话复活
   void rm(tokenFile(), { force: true }).catch(() => {})
+}
+
+// ---------- 扫码登录 ----------
+// 走 SDK 内置的 logbox 扫码链路（getUUID → qrcodeLoginState 轮询 → getSessionForPC 换会话），
+// 拿到的 accessToken/refreshToken 写进与密码登录相同的加密 token 存储，会话复用完全一致。
+
+interface QrLoginSession {
+  client: CloudClient
+  store: EncryptedTokenStore
+  qrData: Awaited<ReturnType<CloudClient['authClient']['getQRCode']>>
+}
+
+let qrSession: QrLoginSession | null = null
+let qrPollBusy = false
+
+export interface CloudQrPoll {
+  /** waiting=未扫码 scanned=已扫码待确认 done=登录成功 expired=二维码过期 */
+  state: 'waiting' | 'scanned' | 'done' | 'expired'
+  username?: string
+}
+
+/** 发起扫码登录：取 uuid，并把官方渲染的登录二维码图片转成 dataURL */
+export async function cloudQrStart(): Promise<{ dataUrl: string }> {
+  const store = new EncryptedTokenStore()
+  const qrClient = new CloudClient({ token: store })
+  const qrData = await qrClient.authClient.getQRCode()
+  // image.do 直接返回官方渲染的登录二维码（内容为 App 确认页地址）
+  // encodeuuid 运行时必有，SDK 的 d.ts 漏了声明
+  const encodeuuid = (qrData as QRCodeData & { encodeuuid: string }).encodeuuid
+  const resp = await fetch(`https://open.e.189.cn/api/logbox/oauth2/image.do?uuid=${encodeuuid}`)
+  if (!resp.ok) throw new Error(`二维码获取失败：HTTP ${resp.status}`)
+  const buf = Buffer.from(await resp.arrayBuffer())
+  const type = resp.headers.get('content-type') ?? 'image/png'
+  qrSession = { client: qrClient, store, qrData }
+  return { dataUrl: `data:${type};base64,${buf.toString('base64')}` }
+}
+
+/** 轮询扫码状态（渲染层 2~3 秒一次）；确认后完成会话建立并返回账号昵称 */
+export async function cloudQrPoll(): Promise<CloudQrPoll> {
+  if (!qrSession) return { state: 'expired' }
+  if (qrPollBusy) return { state: 'waiting' }
+  qrPollBusy = true
+  try {
+    const res = await qrSession.client.authClient.checkQRCodeStatus(qrSession.qrData)
+    if (res.status === QRCodeStatus.SUCCESS) {
+      return { state: 'done', username: await finishQrLogin(res.redirectUrl) }
+    }
+    if (res.status === QRCodeStatus.EXPIRED) return { state: 'expired' }
+    if (res.status === QRCodeStatus.SCANNED) return { state: 'scanned' }
+    return { state: 'waiting' }
+  } finally {
+    qrPollBusy = false
+  }
+}
+
+/** 扫码确认后的收尾：redirectURL 换 token → 加密落盘 → 建立会话 */
+async function finishQrLogin(redirectUrl?: string): Promise<string> {
+  const session = qrSession
+  if (!session) throw new Error('扫码会话已失效')
+  if (!redirectUrl) throw new Error('扫码成功但缺少跳转参数，请重试')
+  const loginToken = await session.client.authClient.getSessionForPC({ redirectURL: redirectUrl })
+  // 与密码登录同一套 token 复用体系（有效期同 SDK 内部口径：6 天）
+  await session.store.update({
+    accessToken: loginToken.accessToken,
+    refreshToken: loginToken.refreshToken,
+    expiresIn: Date.now() + 6 * 24 * 60 * 60 * 1000
+  })
+  // 触发一次真实调用完成会话建立，token 无效则整体视为登录失败
+  await session.client.getUserSizeInfo()
+  client = session.client
+  currentUsername = loginToken.loginName || '扫码登录'
+  // 存昵称供重启恢复时展示；扫码登录不存密码
+  setSetting<StoredCred>(CRED_KEY, { username: currentUsername })
+  notifyReady()
+  qrSession = null
+  return currentUsername
 }
 
 export function requireClient(): CloudClient {

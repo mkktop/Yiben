@@ -9,9 +9,11 @@ import {
   Circle,
   CloudDownload,
   Download,
+  FolderInput,
   Loader2,
   Pencil,
   PlayCircle,
+  Plus,
   RefreshCw,
   RotateCcw,
   Trash2,
@@ -28,7 +30,8 @@ import type {
   PrefetchDone,
   PrefetchProgress,
   Series,
-  SeriesDetail
+  SeriesDetail,
+  ShelfInfo
 } from '@shared/types'
 import { parseTags } from '@shared/types'
 import { cn, errorMessage } from '@/lib/utils'
@@ -155,6 +158,187 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
+/**
+ * 「书架与标签」弹层：虚拟书架多选（可新建）+ 自定义标签（回车创建、× 删除）。
+ * 每次改动立即写库并 bump()，让书架/详情页的列表与角标跟着刷新。
+ * 注意：这里的标签是与 ComicInfo 元数据无关的另一套（关联表存储）。
+ */
+function ShelfTagDialog({ series, onClose }: { series: Series; onClose: () => void }) {
+  const version = useDataStore((s) => s.version)
+  const bump = useDataStore((s) => s.bump)
+  const [newShelf, setNewShelf] = useState('')
+  const [tagInput, setTagInput] = useState('')
+  const [error, setError] = useState('')
+  // 都以 version 为依赖：写库 + bump 后自动重取，界面永远反映库里的真实状态
+  const { data: shelves } = useAsync<ShelfInfo[]>(() => window.yiben.shelves.list(), [version])
+  const { data: memberIds } = useAsync<number[]>(
+    () => window.yiben.shelves.forSeries(series.id),
+    [version, series.id]
+  )
+  const { data: memberTags } = useAsync<string[]>(
+    () => window.yiben.tags.forSeries(series.id),
+    [version, series.id]
+  )
+
+  const member = new Set(memberIds ?? [])
+  const run = async (fn: () => Promise<unknown>): Promise<void> => {
+    setError('')
+    try {
+      await fn()
+      bump()
+    } catch (e) {
+      setError(errorMessage(e))
+    }
+  }
+
+  const toggleShelf = (id: number): void => {
+    const next = member.has(id) ? [...member].filter((x) => x !== id) : [...member, id]
+    void run(() => window.yiben.shelves.setForSeries(series.id, next))
+  }
+
+  const createShelfAndJoin = (): void => {
+    const name = newShelf.trim()
+    if (!name) return
+    void run(async () => {
+      const shelf = await window.yiben.shelves.create(name)
+      await window.yiben.shelves.setForSeries(series.id, [...member, shelf.id])
+      setNewShelf('')
+    })
+  }
+
+  const addTag = (): void => {
+    const name = tagInput.trim()
+    if (!name) return
+    void run(async () => {
+      await window.yiben.tags.setForSeries(series.id, [...(memberTags ?? []), name])
+      setTagInput('')
+    })
+  }
+
+  const removeTag = (name: string): void => {
+    void run(() =>
+      window.yiben.tags.setForSeries(
+        series.id,
+        (memberTags ?? []).filter((t) => t !== name)
+      )
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-6" onClick={onClose}>
+      <div
+        className="w-full max-w-md rounded-xl border bg-background shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-border/60 px-5 py-3.5">
+          <h2 className="text-sm font-semibold">书架与标签</h2>
+          <Button variant="ghost" size="icon" className="size-7" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
+        </div>
+
+        <div className="max-h-[60vh] space-y-5 overflow-y-auto p-5">
+          <section>
+            <p className="mb-2 text-xs text-muted-foreground">虚拟书架（可归入多个）</p>
+            <div className="flex flex-wrap gap-2">
+              {(shelves ?? []).map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => toggleShelf(s.id)}
+                  className={cn(
+                    'flex items-center gap-1 rounded-full px-3 py-1.5 text-xs transition-colors',
+                    member.has(s.id)
+                      ? 'bg-primary font-medium text-primary-foreground'
+                      : 'bg-muted text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  {member.has(s.id) && <CheckCircle2 className="size-3" />}
+                  {s.name}
+                </button>
+              ))}
+              {(shelves ?? []).length === 0 && (
+                <p className="text-xs text-muted-foreground">还没有书架，在下面创建一个</p>
+              )}
+            </div>
+            <div className="mt-3 flex gap-2">
+              <Input
+                value={newShelf}
+                onChange={(e) => setNewShelf(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && createShelfAndJoin()}
+                placeholder="新建书架，如「追更中」"
+                className="h-8 text-xs"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 shrink-0 px-2.5"
+                disabled={!newShelf.trim()}
+                onClick={createShelfAndJoin}
+              >
+                <Plus className="size-3.5" />
+                新建并归入
+              </Button>
+            </div>
+          </section>
+
+          <section>
+            <p className="mb-2 text-xs text-muted-foreground">
+              自定义标签（与 ComicInfo 元数据标签相互独立）
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {(memberTags ?? []).map((t) => (
+                <span
+                  key={t}
+                  className="flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 text-xs text-primary"
+                >
+                  {t}
+                  <button
+                    onClick={() => removeTag(t)}
+                    className="grid size-4 place-items-center rounded-full hover:bg-primary/20"
+                    title="删除标签"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </span>
+              ))}
+              {(memberTags ?? []).length === 0 && (
+                <p className="text-xs text-muted-foreground">还没有标签</p>
+              )}
+            </div>
+            <div className="mt-3 flex gap-2">
+              <Input
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && addTag()}
+                placeholder="输入标签，回车添加"
+                className="h-8 text-xs"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 shrink-0 px-2.5"
+                disabled={!tagInput.trim()}
+                onClick={addTag}
+              >
+                <Plus className="size-3.5" />
+                添加
+              </Button>
+            </div>
+          </section>
+
+          {error && <p className="text-xs text-destructive">{error}</p>}
+        </div>
+
+        <div className="flex justify-end border-t border-border/60 px-5 py-3">
+          <Button size="sm" variant="outline" onClick={onClose}>
+            完成
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** 整系列离线缓存（仅云端系列）：章节级进度条 + 取消 */
 function PrefetchButton({ seriesId, total }: { seriesId: number; total: number }) {
   const [progress, setProgress] = useState<PrefetchProgress | null>(null)
@@ -233,7 +417,19 @@ export function SeriesPage() {
   const [removeError, setRemoveError] = useState('')
   const [actionError, setActionError] = useState('')
   const [editing, setEditing] = useState(false)
+  const [organizing, setOrganizing] = useState(false)
   const [rescanning, setRescanning] = useState(false)
+
+  // 归属信息（弹层里改完 bump 后这里跟着刷新）；放在提前 return 之前保证 hooks 顺序
+  const seriesId = Number(id) || 0
+  const { data: myShelfIds } = useAsync<number[]>(
+    () => window.yiben.shelves.forSeries(seriesId),
+    [seriesId, version]
+  )
+  const { data: myTags } = useAsync<string[]>(
+    () => window.yiben.tags.forSeries(seriesId),
+    [seriesId, version]
+  )
 
   if (error) {
     return <EmptyHint>加载失败：{error}</EmptyHint>
@@ -251,7 +447,7 @@ export function SeriesPage() {
   const readChapters = chapters.filter((c) => c.completed === 1).length
   const nextChapter =
     chapters.find((c) => c.completed !== 1) ?? chapters[chapters.length - 1] ?? null
-  const isCloud = detail.libraryKind === 'cloud189'
+  const isCloud = detail.libraryKind !== 'local'
 
   const run = async (fn: () => Promise<unknown>): Promise<void> => {
     setActionError('')
@@ -311,6 +507,20 @@ export function SeriesPage() {
             >
               <Pencil />
               编辑信息
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              title="归入虚拟书架、打自定义标签"
+              onClick={() => setOrganizing(true)}
+            >
+              <FolderInput />
+              书架与标签
+              {(myShelfIds?.length ?? 0) + (myTags?.length ?? 0) > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  {(myShelfIds?.length ?? 0) + (myTags?.length ?? 0)}
+                </span>
+              )}
             </Button>
             {!isCloud && (
               <Button
@@ -393,6 +603,19 @@ export function SeriesPage() {
                   <span
                     key={t}
                     className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            )}
+            {/* 自定义标签：与上面的元数据标签是两套体系，用主色区分显示 */}
+            {(myTags?.length ?? 0) > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {myTags!.map((t) => (
+                  <span
+                    key={t}
+                    className="rounded-full bg-primary/10 px-2.5 py-1 text-xs text-primary"
                   >
                     {t}
                   </span>
@@ -516,6 +739,7 @@ export function SeriesPage() {
       </div>
 
       {editing && <MetaDialog series={series} onClose={() => setEditing(false)} />}
+      {organizing && <ShelfTagDialog series={series} onClose={() => setOrganizing(false)} />}
     </div>
   )
 }

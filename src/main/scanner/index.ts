@@ -10,7 +10,7 @@ import {
   retireSeriesNotIn,
   seriesMetaProbed,
   setSeriesCover,
-  upsertChapter,
+  upsertChapters,
   upsertSeries
 } from '../db'
 import { withDriver, sniffArchiveKind, type DriverKind } from '../archives'
@@ -26,6 +26,7 @@ import { readComicInfo, parseComicInfoXml, type ComicInfo } from './comicinfo'
 import { parseChapterName } from './parse'
 import { adoptRelocatedSeries } from './relocate'
 import { coverStale, generateCover, removeSeriesArtifacts } from '../thumbnail'
+import { removePageThumbs } from '../pageThumb'
 
 export interface ScanProgress {
   libraryId: number
@@ -270,9 +271,9 @@ export async function scanOneLocalSeries(
     return naturalCompare(a.title, b.title)
   })
 
-  for (let i = 0; i < chapterMetas.length; i++) {
-    const m = chapterMetas[i]
-    upsertChapter({
+  // 整批包进一个事务：逐条自动提交在大库扫描时会把事件循环拖住
+  upsertChapters(
+    chapterMetas.map((m, i) => ({
       series_id: seriesId,
       title: m.title,
       volume: m.volume,
@@ -284,9 +285,11 @@ export async function scanOneLocalSeries(
       size: m.size,
       mtime: m.mtime,
       scan_error: m.scan_error
-    })
-  }
-  deleteChaptersNotIn(seriesId, seenChapterPaths)
+    }))
+  )
+  // 被删除的章节行会级联清掉进度，但页缩略图目录在文件系统里，得手动跟删
+  const removedChapterIds = deleteChaptersNotIn(seriesId, seenChapterPaths)
+  if (removedChapterIds.length > 0) await removePageThumbs(removedChapterIds)
 
   // 封面：取排序后第一章第一页（首章内容比封面新时重建）
   if (chapterMetas.length > 0) {
@@ -304,9 +307,19 @@ export async function scanOneLocalSeries(
 async function readComicInfoFromArchives(
   chapters: Array<{ path: string; isDir: boolean; name: string }>
 ): Promise<ComicInfo | null> {
-  const archives = chapters.filter((c) => !c.isDir && archiveKindOf(c.name))
+  // PDF 主进程驱动层不支持（会抛 UnsupportedFormatError），元数据探测直接跳过
+  const archives = chapters.filter(
+    (c) => !c.isDir && archiveKindOf(c.name) && archiveKindOf(c.name) !== 'pdf'
+  )
   for (const ch of archives.slice(0, 3)) {
-    const xml = await withDriver(ch.path, false, async (d) => (await d.readEntry?.('ComicInfo.xml')) ?? null)
+    let xml: Buffer | null = null
+    try {
+      xml = await withDriver(ch.path, false, async (d) => (await d.readEntry?.('ComicInfo.xml')) ?? null)
+    } catch (err) {
+      // 单个包损坏不该让整个系列的扫描失败
+      console.warn(`[scan] ComicInfo 探测失败 ${ch.path}:`, err instanceof Error ? err.message : err)
+      continue
+    }
     if (!xml) continue
     const info = parseComicInfoXml(xml.toString('utf-8'))
     if (info) return info

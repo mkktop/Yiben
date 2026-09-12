@@ -42,8 +42,18 @@ export function useCurrentPageObserver(
       el.querySelectorAll<HTMLElement>('[data-page]').forEach((node) => observer.observe(node))
     }
     observePages()
-    // 页节点是渐进出现的（PDF 逐页渲染、条漫图片懒加载）
-    const mutations = new MutationObserver(observePages)
+    // 页节点是渐进出现的（PDF 逐页渲染、条漫图片懒加载）。
+    // 只 observe 新增的节点：每次 mutation 都全量 querySelectorAll 重扫，
+    // 在 PDF 多页 + 频繁 DOM 变动时近似 O(n²)。重复 observe 同一节点是无害 no-op。
+    const mutations = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof HTMLElement)) continue
+          if (node.dataset['page'] !== undefined) observer.observe(node)
+          node.querySelectorAll<HTMLElement>('[data-page]').forEach((n) => observer.observe(n))
+        }
+      }
+    })
     mutations.observe(el, { childList: true, subtree: true })
 
     return () => {

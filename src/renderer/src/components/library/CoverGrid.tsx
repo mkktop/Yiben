@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { BookOpen, Check } from 'lucide-react'
 import type { Series } from '@shared/types'
@@ -93,10 +93,14 @@ interface CoverGridProps {
 const MIN_COL_WIDTH = 172
 const ROW_ESTIMATE = 262
 
+/** 按路由记忆滚动位置：从详情页返回书架时回到离开时的位置（虚拟列表换页即重挂） */
+const scrollMemory = new Map<string, number>()
+
 /** 封面墙：按容器宽度定列数，按行虚拟滚动 */
 export function CoverGrid({ series, loading, emptyHint, selection }: CoverGridProps) {
   const parentRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(1200)
+  const location = useLocation()
 
   // 列数必须跟着窗口宽度走：render 期读 clientWidth 拿到的是首帧的旧值，且缩放后不会重算
   useEffect(() => {
@@ -118,8 +122,31 @@ export function CoverGrid({ series, loading, emptyHint, selection }: CoverGridPr
     count: rows,
     getScrollElement: () => parentRef.current,
     estimateSize: () => ROW_ESTIMATE,
+    // 实际行高（3:4 封面 + 两行文字 + 行距）与估算值偏差不小：挂 ref 实测，
+    // 滚动条长度与跳页定位才准
+    measureElement: (el) => el.getBoundingClientRect().height,
     overscan: 2
   })
+
+  // 返回本页时恢复滚动位置；数据未到齐前恢复不到位，每帧重试直到成功
+  const restoredRef = useRef(false)
+  useEffect(() => {
+    const el = parentRef.current
+    if (!el) return
+    const saved = scrollMemory.get(location.pathname) ?? 0
+    if (!restoredRef.current && saved > 0 && count > 0) {
+      el.scrollTop = saved
+      if (el.scrollTop > 0) restoredRef.current = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [count, location.pathname])
+  useEffect(
+    () => () => {
+      const el = parentRef.current
+      if (el) scrollMemory.set(location.pathname, el.scrollTop)
+    },
+    [location.pathname]
+  )
 
   if (!loading && count === 0) {
     return <EmptyHint>{emptyHint ?? '这里还是空的'}</EmptyHint>
@@ -133,6 +160,8 @@ export function CoverGrid({ series, loading, emptyHint, selection }: CoverGridPr
         {rowVirtualizer.getVirtualItems().map((row) => (
           <div
             key={row.key}
+            data-index={row.index}
+            ref={rowVirtualizer.measureElement}
             style={{
               position: 'absolute',
               top: 0,

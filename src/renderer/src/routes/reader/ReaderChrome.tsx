@@ -49,6 +49,8 @@ export interface ReaderChromeProps {
   onJump: (chapterId: number, page0: number) => void
   /** 返回（ReaderPage 持有，带兜底逻辑） */
   onBack: () => void
+  /** 条漫跨话拼接：下一话已在同一条带里，末页提示卡不再展示 */
+  hideEndCard?: boolean
   /** 跨页配对切换（C 键与顶栏按钮共用） */
   onToggleSpreadOffset: () => void
   /** 底部提示浮层（阅读方向 / 跨页配对反馈），ReaderPage 持有状态 */
@@ -85,23 +87,23 @@ export function ReaderChrome({
   hint,
   onHintClose,
   panel,
-  onPanelChange
+  onPanelChange,
+  hideEndCard
 }: ReaderChromeProps) {
-  const {
-    mode,
-    fit,
-    rtl,
-    rotate,
-    page,
-    pageCount,
-    widePages,
-    spreadOffset,
-    immersive,
-    showThumbs,
-    setPage,
-    patch,
-    toggleThumbs
-  } = useReaderStore()
+  // 细粒度订阅：顶栏只关心自己展示/操作的字段，避免跟随无关状态整树 reconcile
+  const mode = useReaderStore((s) => s.mode)
+  const fit = useReaderStore((s) => s.fit)
+  const rtl = useReaderStore((s) => s.rtl)
+  const rotate = useReaderStore((s) => s.rotate)
+  const page = useReaderStore((s) => s.page)
+  const pageCount = useReaderStore((s) => s.pageCount)
+  const widePages = useReaderStore((s) => s.widePages)
+  const spreadOffset = useReaderStore((s) => s.spreadOffset)
+  const immersive = useReaderStore((s) => s.immersive)
+  const showThumbs = useReaderStore((s) => s.showThumbs)
+  const setPage = useReaderStore((s) => s.setPage)
+  const patch = useReaderStore((s) => s.patch)
+  const toggleThumbs = useReaderStore((s) => s.toggleThumbs)
 
   const spread = spreadPages(page, pageCount, rtl, widePages, spreadOffset)
   const lo = Math.min(...spread) + 1
@@ -242,8 +244,9 @@ export function ReaderChrome({
         ))}
       </div>
 
-      {/* 末页提示卡：直接进下一话（键盘/点击继续翻页也会自动进入） */}
-      {atEnd && neighbors?.next && (
+      {/* 末页提示卡：直接进下一话（键盘/点击继续翻页也会自动进入）；
+          条漫跨话拼接时下一话已在同一条带里，卡就不必再出现 */}
+      {atEnd && neighbors?.next && !hideEndCard && (
         <button
           onClick={onNextChapter}
           className={cn(

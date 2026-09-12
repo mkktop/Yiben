@@ -1,6 +1,7 @@
 import { getLibrary } from './db'
 import { scanLibrary, type ScanSummary } from './scanner'
 import { scanCloudLibrary } from './cloud189/scanner'
+import { scan115Library } from './cloud115/scanner'
 import { broadcast } from './events'
 
 let scanning = false
@@ -36,10 +37,16 @@ export async function rescanLibrary(
             lib.family_id ?? undefined,
             (p) => broadcast('scan:progress', { ...p, phase: 'reading' })
           )
-        : await scanLibrary(libraryId, (p) => {
-            // 终态 done 交给 finally 统一发，避免两处重复或漏发
-            if (p.phase !== 'done') broadcast('scan:progress', p)
-          })
+        : lib.kind === '115'
+          ? await scan115Library(
+              libraryId,
+              lib.cloud_folder_id ?? '0',
+              (p) => broadcast('scan:progress', { ...p, phase: 'reading' })
+            )
+          : await scanLibrary(libraryId, (p) => {
+              // 终态 done 交给 finally 统一发，避免两处重复或漏发
+              if (p.phase !== 'done') broadcast('scan:progress', p)
+            })
 
     if (summary.missing) {
       broadcast('scan:notice', {

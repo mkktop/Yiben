@@ -20,6 +20,12 @@
       "output": "dist"
     },
     "npmRebuild": false,
+    "asarUnpack": [
+      "**/node_modules/7zip-bin/**",
+      "**/node_modules/sharp/**",
+      "**/node_modules/better-sqlite3/**",
+      "**/node_modules/node-unrar-js/**"
+    ],
     "publish": {
       "provider": "github",
       "owner": "mkktop",
@@ -36,6 +42,72 @@
         {
           "target": "nsis",
           "arch": ["x64"]
+        }
+      ],
+      "fileAssociations": [
+        {
+          "ext": "cbz",
+          "name": "漫画压缩包 (CBZ)",
+          "description": "用一本 Yiben 打开漫画压缩包",
+          "icon": "build/icon.ico"
+        },
+        {
+          "ext": "cbr",
+          "name": "漫画压缩包 (CBR)",
+          "description": "用一本 Yiben 打开漫画压缩包",
+          "icon": "build/icon.ico"
+        },
+        {
+          "ext": "cb7",
+          "name": "漫画压缩包 (CB7)",
+          "description": "用一本 Yiben 打开漫画压缩包",
+          "icon": "build/icon.ico"
+        },
+        {
+          "ext": "cbt",
+          "name": "漫画压缩包 (CBT)",
+          "description": "用一本 Yiben 打开漫画压缩包",
+          "icon": "build/icon.ico"
+        },
+        {
+          "ext": "pdf",
+          "name": "PDF 文档",
+          "description": "用一本 Yiben 打开 PDF 漫画",
+          "icon": "build/icon.ico"
+        }
+      ]
+    },
+    "mac": {
+      "fileAssociations": [
+        {
+          "ext": "cbz",
+          "name": "漫画压缩包 (CBZ)",
+          "description": "用一本 Yiben 打开漫画压缩包",
+          "role": "Viewer"
+        },
+        {
+          "ext": "cbr",
+          "name": "漫画压缩包 (CBR)",
+          "description": "用一本 Yiben 打开漫画压缩包",
+          "role": "Viewer"
+        },
+        {
+          "ext": "cb7",
+          "name": "漫画压缩包 (CB7)",
+          "description": "用一本 Yiben 打开漫画压缩包",
+          "role": "Viewer"
+        },
+        {
+          "ext": "cbt",
+          "name": "漫画压缩包 (CBT)",
+          "description": "用一本 Yiben 打开漫画压缩包",
+          "role": "Viewer"
+        },
+        {
+          "ext": "pdf",
+          "name": "PDF 文档",
+          "description": "用一本 Yiben 打开 PDF 漫画",
+          "role": "Viewer"
         }
       ]
     },

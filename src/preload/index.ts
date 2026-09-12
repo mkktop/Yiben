@@ -1,6 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { CloudNotice, PrefetchDone, PrefetchProgress } from '../shared/types'
+import type {
+  CloudBrowseResult,
+  CloudNotice,
+  DiagnoseReport,
+  PrefetchDone,
+  PrefetchProgress,
+  ShelfInfo,
+  TagInfo
+} from '../shared/types'
 
 const api = {
   appWindow: {
@@ -28,6 +36,10 @@ const api = {
       libraryId?: number
       query?: string
       filter?: 'all' | 'unread' | 'reading' | 'read' | 'recent'
+      /** 归入某虚拟书架 */
+      shelfId?: number
+      /** 自定义标签（关联表），多个 AND 语义 */
+      tags?: string[]
       limit?: number
       offset?: number
     }) => ipcRenderer.invoke('series:list', opts ?? {}),
@@ -50,13 +62,54 @@ const api = {
       ipcRenderer.invoke('bookmarks:toggle', { chapterId, page }) as Promise<boolean>,
     list: (seriesId: number) => ipcRenderer.invoke('bookmarks:list', seriesId)
   },
+  shelves: {
+    list: (): Promise<ShelfInfo[]> => ipcRenderer.invoke('shelves:list') as Promise<ShelfInfo[]>,
+    /** 同名创建幂等：返回已有书架 */
+    create: (name: string): Promise<ShelfInfo> =>
+      ipcRenderer.invoke('shelves:create', name) as Promise<ShelfInfo>,
+    rename: (id: number, name: string): Promise<void> =>
+      ipcRenderer.invoke('shelves:rename', { id, name }) as Promise<void>,
+    remove: (id: number): Promise<void> =>
+      ipcRenderer.invoke('shelves:remove', id) as Promise<void>,
+    /** 系列当前归入的书架 id（弹层回显） */
+    forSeries: (seriesId: number): Promise<number[]> =>
+      ipcRenderer.invoke('shelves:forSeries', seriesId) as Promise<number[]>,
+    /** 全量替换系列的书架归属（空数组 = 全部移出） */
+    setForSeries: (seriesId: number, shelfIds: number[]): Promise<void> =>
+      ipcRenderer.invoke('shelves:setForSeries', { seriesId, shelfIds }) as Promise<void>
+  },
+  tags: {
+    list: (): Promise<TagInfo[]> => ipcRenderer.invoke('tags:list') as Promise<TagInfo[]>,
+    /** 系列当前的自定义标签名（弹层回显） */
+    forSeries: (seriesId: number): Promise<string[]> =>
+      ipcRenderer.invoke('tags:forSeries', seriesId) as Promise<string[]>,
+    /** 全量替换系列的自定义标签；不存在的 name 自动创建 */
+    setForSeries: (seriesId: number, names: string[]): Promise<void> =>
+      ipcRenderer.invoke('tags:setForSeries', { seriesId, names }) as Promise<void>
+  },
   data: {
     export: () => ipcRenderer.invoke('data:export'),
     import: () => ipcRenderer.invoke('data:import')
   },
+  diagnose: {
+    /** 库体检（只读诊断）：损坏章节/空章节/重复系列/孤儿缩略图；可选限定某个书库 */
+    run: (libraryId?: number): Promise<DiagnoseReport> =>
+      ipcRenderer.invoke('diagnose:run', libraryId) as Promise<DiagnoseReport>
+  },
   home: {
     continue: () => ipcRenderer.invoke('home:continue'),
     recent: () => ipcRenderer.invoke('home:recent')
+  },
+  stats: {
+    /** 阅读统计（热力图/指标卡）：最近 days 天的每日页数与连续天数等 */
+    overview: (days?: number) =>
+      ipcRenderer.invoke('stats:overview', days) as Promise<{
+        days: Array<{ day: string; pages: number }>
+        streak: number
+        totalPages: number
+        totalDays: number
+        bestDay: { day: string; pages: number } | null
+      }>
   },
   updater: {
     appVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
@@ -131,6 +184,10 @@ const api = {
     setCompleted: (chapterId: number, completed: boolean) =>
       ipcRenderer.invoke('progress:setCompleted', { chapterId, completed })
   },
+  openFile: {
+    /** 领取冷启动暂存的待打开章节 id（没有则 null）；与 events.onOpenFile 的推送互补 */
+    take: (): Promise<number | null> => ipcRenderer.invoke('app:takeOpenFile') as Promise<number | null>
+  },
   events: {
     onScanProgress: (cb: (payload: unknown) => void) => {
       const listener = (_e: unknown, payload: unknown): void => cb(payload)
@@ -196,12 +253,31 @@ const api = {
       return (): void => {
         ipcRenderer.removeListener('cloud:notice', listener)
       }
+    },
+    /** 系统文件关联：主进程解析出双击文件的章节 id 后推送 */
+    onOpenFile: (cb: (payload: { chapterId: number }) => void) => {
+      const listener = (_e: unknown, payload: { chapterId: number }): void => cb(payload)
+      ipcRenderer.on('app:openFile', listener)
+      return (): void => {
+        ipcRenderer.removeListener('app:openFile', listener)
+      }
     }
   },
   cloud: {
     status: () => ipcRenderer.invoke('cloud:status'),
     login: (username: string, password: string) =>
       ipcRenderer.invoke('cloud:login', { username, password }),
+    qr: {
+      /** 发起扫码登录：返回官方渲染的二维码图片（dataURL） */
+      start: (): Promise<{ dataUrl: string }> =>
+        ipcRenderer.invoke('cloud:qrStart') as Promise<{ dataUrl: string }>,
+      /** 轮询扫码状态：waiting 未扫码 / scanned 已扫码待确认 / done 成功 / expired 过期 */
+      poll: (): Promise<{ state: 'waiting' | 'scanned' | 'done' | 'expired'; username?: string }> =>
+        ipcRenderer.invoke('cloud:qrPoll') as Promise<{
+          state: 'waiting' | 'scanned' | 'done' | 'expired'
+          username?: string
+        }>
+    },
     logout: () => ipcRenderer.invoke('cloud:logout'),
     capacity: (familyId?: string) => ipcRenderer.invoke('cloud:capacity', familyId),
     families: () => ipcRenderer.invoke('cloud:families'),
@@ -225,6 +301,26 @@ const api = {
       ipcRenderer.invoke('cloud:browse', { folderId, familyId }),
     addLibrary: (folderId: string, familyId: string | undefined, name: string) =>
       ipcRenderer.invoke('cloud:addLibrary', { folderId, familyId, name })
+  },
+  cloud115: {
+    status: () => ipcRenderer.invoke('cloud115:status'),
+    qr: {
+      /** 发起扫码登录：返回官方渲染的二维码图片（dataURL） */
+      start: (): Promise<{ dataUrl: string }> =>
+        ipcRenderer.invoke('cloud115:qrStart') as Promise<{ dataUrl: string }>,
+      /** 轮询扫码状态：waiting 未扫码 / scanned 已扫码待确认 / done 成功 / expired 过期 */
+      poll: (): Promise<{ state: 'waiting' | 'scanned' | 'done' | 'expired'; username?: string }> =>
+        ipcRenderer.invoke('cloud115:qrPoll') as Promise<{
+          state: 'waiting' | 'scanned' | 'done' | 'expired'
+          username?: string
+        }>
+    },
+    logout: () => ipcRenderer.invoke('cloud115:logout'),
+    capacity: () => ipcRenderer.invoke('cloud115:capacity'),
+    browse: (folderId?: string) =>
+      ipcRenderer.invoke('cloud115:browse', { folderId }) as Promise<CloudBrowseResult>,
+    addLibrary: (folderId: string, name: string) =>
+      ipcRenderer.invoke('cloud115:addLibrary', { folderId, name })
   }
 }
 

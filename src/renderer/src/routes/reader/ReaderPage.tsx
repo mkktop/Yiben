@@ -33,7 +33,11 @@ export function ReaderPage() {
     () => window.yiben.reader.chapter(Number(chapterId)),
     [chapterId]
   )
-  const store = useReaderStore()
+  // 细粒度订阅：setPage 在条漫滚动/翻页时极高频，订阅整个 store 会让阅读器子树跟着整帧 reconcile
+  const mode = useReaderStore((s) => s.mode)
+  const page = useReaderStore((s) => s.page)
+  const pageCount = useReaderStore((s) => s.pageCount)
+  const setPage = useReaderStore((s) => s.setPage)
 
   /**
    * 返回：能 back 就 back。
@@ -70,6 +74,43 @@ export function ReaderPage() {
   const activeId = chapter?.id ?? 0
   const seriesId = chapter?.series_id ?? 0
 
+  /**
+   * 条漫跨话连续滚动：视口滚进拼接的下一话时，进度/页码归属软切换到那一话
+   * （不导航不重载）；滚回上一话则切回。null = 仍在路由话。
+   */
+  const [embedded, setEmbedded] = useState<{
+    id: number
+    title: string
+    pageCount: number
+    start: number
+  } | null>(null)
+  const embeddedRef = useRef(embedded)
+  embeddedRef.current = embedded
+  /** 进度/书签/页码指示的归属话：嵌入话优先 */
+  const positionId = embedded?.id ?? activeId
+  const positionCount = embedded?.pageCount ?? pageCount
+
+  /** 视口位置回报（条漫观察者驱动）：软切换 store 的页码与页数归属 */
+  const onPosition = useCallback(
+    (pos: { chapterId: number; title: string; page: number; pageCount: number; start: number }) => {
+      setEmbedded(
+        pos.chapterId === chapter?.id
+          ? null
+          : { id: pos.chapterId, title: pos.title, pageCount: pos.pageCount, start: pos.start }
+      )
+      useReaderStore.setState({ page: pos.page, pageCount: pos.pageCount })
+    },
+    [chapter?.id]
+  )
+
+  /** 条带内按「当前话局部页码」滚动（嵌入话要加上其全局起始偏移） */
+  const scrollStripTo = useCallback((localPage: number, absolute = false): void => {
+    const offset = absolute ? 0 : embeddedRef.current?.start ?? 0
+    document
+      .querySelector(`img[data-page="${localPage + offset}"], div[data-page="${localPage + offset}"]`)
+      ?.scrollIntoView({ block: 'start' })
+  }, [])
+
   // 书签深链（/reader/:id?p=N）；普通进入时未读完恢复进度、已读完从头开始
   const deepParam = search.get('p')
   const deepPage =
@@ -79,15 +120,21 @@ export function ReaderPage() {
 
   useEffect(() => {
     if (!chapter || initFor.current === chapter.id) return
-    initFor.current = chapter.id
+    // await 之后章节可能已被切走（快速切话/深链跳转），apply 前必须校验，
+    // 否则旧话的结果会覆盖新话的页数/起始页，还把 readyFor 写成旧 id 导致新话进度永不落库
+    const myId = chapter.id
+    const mySeriesId = chapter.series_id
+    const myPageCount = chapter.page_count
+    initFor.current = myId
     void (async () => {
       // 全局默认 < 按系列记忆
       const [prefs, defaults] = await Promise.all([
-        window.yiben.reader.getPrefs(chapter.series_id),
+        window.yiben.reader.getPrefs(mySeriesId),
         window.yiben.reader.getDefaults().catch(() => ({}))
       ])
-      useReaderStore.getState().init({ ...defaults, ...prefs }, chapter.page_count, startPage)
-      readyFor.current = chapter.id
+      if (initFor.current !== myId) return
+      useReaderStore.getState().init({ ...defaults, ...prefs }, myPageCount, startPage)
+      readyFor.current = myId
       // 方向提示：每次进入阅读器提示一次；条漫纵向阅读没有方向
       if (!dirHintShown.current) {
         dirHintShown.current = true
@@ -106,10 +153,12 @@ export function ReaderPage() {
   // 云端压缩包整包下载后主进程才知道真实页数，收到推送后刷新并重新钳位页码
   useEffect(() => {
     if (!activeId) return
-    return window.yiben.events.onChapterPageCount(({ chapterId: id, pageCount }) => {
-      if (id !== activeId || pageCount <= 0) return
+    return window.yiben.events.onChapterPageCount(({ chapterId: id, pageCount: count }) => {
+      if (id !== activeId || count <= 0) return
+      // 正读着拼接话时 store 的页数属于拼接话，路由话的回填不能覆盖
+      if (embeddedRef.current) return
       const s = useReaderStore.getState()
-      useReaderStore.setState({ pageCount })
+      useReaderStore.setState({ pageCount: count })
       s.setPage(s.page)
       // 系列页/书架的页数展示也跟着刷新
       useDataStore.getState().bump()
@@ -126,7 +175,7 @@ export function ReaderPage() {
     pending.current = null
     // 页数未知（0）时不判定完成，避免 PDF/云端压缩包一打开就被标记已读
     const completed = p.pageCount > 0 && p.page >= p.pageCount - 1
-    void window.yiben.progress.save(p.chapterId, p.page, completed)
+    void window.yiben.progress.save(p.chapterId, p.page, completed).catch(() => {})
   }, [])
 
   // ---------- 跨话导航 ----------
@@ -193,20 +242,20 @@ export function ReaderPage() {
   // ---------- 双页模式的跨页识别 ----------
 
   useEffect(() => {
-    if (!activeId || store.mode !== 'double') return
+    if (!activeId || mode !== 'double') return
     const apply = (id: number, dims: Array<{ idx: number; w: number; h: number }>): void => {
       if (id !== activeId) return
       useReaderStore.getState().setWidePages(dims.filter((d) => d.w > d.h).map((d) => d.idx))
     }
     void window.yiben.reader.pageDims(activeId).then((r) => apply(activeId, r.dims)).catch(() => {})
     return window.yiben.events.onChapterPageDims(({ chapterId: id, dims }) => apply(id, dims))
-  }, [activeId, store.mode])
+  }, [activeId, mode])
 
   // 页数回填（云端整包下载完成）后可能又多了待探测的页，双页模式下补一次
   useEffect(() => {
-    if (!activeId || store.mode !== 'double' || store.pageCount <= 0) return
+    if (!activeId || mode !== 'double' || pageCount <= 0) return
     void window.yiben.reader.pageDims(activeId).catch(() => {})
-  }, [activeId, store.mode, store.pageCount])
+  }, [activeId, mode, pageCount])
 
   // ---------- 书签 ----------
 
@@ -219,53 +268,59 @@ export function ReaderPage() {
       .catch(() => {})
   }, [seriesId])
 
-  const isBookmarked = bookmarks.some(
-    (b) => b.chapter_id === activeId && b.page === store.page
-  )
+  const isBookmarked = bookmarks.some((b) => b.chapter_id === positionId && b.page === page)
 
   const toggleBookmark = useCallback(() => {
     const ch = chapter
     if (!ch) return
-    const page = useReaderStore.getState().page
-    void window.yiben.bookmarks.toggle(ch.id, page).then((on) => {
-      setBookmarks((list) =>
-        on
-          ? [
-              ...list,
-              { chapter_id: ch.id, chapter_title: ch.title, page, created_at: Date.now() }
-            ]
-          : list.filter((b) => !(b.chapter_id === ch.id && b.page === page))
-      )
-    })
+    const cur = useReaderStore.getState().page
+    const targetId = embeddedRef.current?.id ?? ch.id
+    const targetTitle = embeddedRef.current?.title || ch.title
+    void window.yiben.bookmarks
+      .toggle(targetId, cur)
+      .then((on) => {
+        setBookmarks((list) =>
+          on
+            ? [
+                ...list,
+                { chapter_id: targetId, chapter_title: targetTitle, page: cur, created_at: Date.now() }
+              ]
+            : list.filter((b) => !(b.chapter_id === targetId && b.page === cur))
+        )
+      })
+      .catch(() => {})
   }, [chapter])
 
   /** 跳页：同话直接定位（条漫滚动），跨话经深链进对应章节 */
   const jumpTo = useCallback(
     (targetChapterId: number, page0: number) => {
-      if (targetChapterId !== activeId) {
+      if (targetChapterId !== positionId) {
         flush()
         navigate(`/reader/${targetChapterId}?p=${page0 + 1}`)
         return
       }
       useReaderStore.getState().setPage(page0)
       if (useReaderStore.getState().mode === 'webtoon') {
+        scrollStripTo(page0)
+      } else {
         document
           .querySelector(`img[data-page="${page0}"], div[data-page="${page0}"]`)
           ?.scrollIntoView({ block: 'start' })
       }
     },
-    [activeId, navigate]
+    [positionId, navigate, scrollStripTo]
   )
 
   // ---------- 进度 ----------
 
-  // 进度节流写入的 effect 与离开页面时的补写
+  // 进度节流写入的 effect 与离开页面时的补写。
+  // 归属话（positionId）随条漫跨话软切换：写到视口当前所在的那一话
   useEffect(() => {
     if (!chapter || readyFor.current !== chapter.id) return
-    pending.current = { chapterId: chapter.id, page: store.page, pageCount: store.pageCount }
+    pending.current = { chapterId: positionId, page, pageCount: positionCount }
     const timer = setTimeout(flush, 400)
     return () => clearTimeout(timer)
-  }, [chapter, store.page, store.pageCount, flush])
+  }, [chapter, positionId, positionCount, page, pageCount, flush])
 
   // 离开阅读器时补写最后一次进度
   useEffect(() => () => flush(), [flush])
@@ -302,7 +357,7 @@ export function ReaderPage() {
           : '跨页配对：从第 1 页起两两配对'
     })
     if (chapter) {
-      void window.yiben.reader.setPrefs(chapter.series_id, { spreadOffset: next })
+      void window.yiben.reader.setPrefs(chapter.series_id, { spreadOffset: next }).catch(() => {})
     }
   }, [chapter])
 
@@ -322,8 +377,8 @@ export function ReaderPage() {
     if (neighbors.prev) warm(neighbors.prev, [neighbors.prev.page_count - 1])
   }, [neighbors])
 
-  // 预加载 ±3 页（PDF 走 pdfjs，不走图片协议）
-  usePagePreload(activeId, store.page, store.pageCount, 3, chapter?.kind !== 'pdf')
+  // 预加载 ±3 页（PDF 走 pdfjs，不走图片协议）；跨话软切换后预载跟随归属话
+  usePagePreload(positionId, page, positionCount, 3, chapter?.kind !== 'pdf')
 
   // 沉浸模式：鼠标静止自动隐藏
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -358,7 +413,7 @@ export function ReaderPage() {
     (mode: ReaderMode): void => {
       useReaderStore.getState().patch({ mode })
       if (chapter) {
-        void window.yiben.reader.setPrefs(chapter.series_id, { mode })
+        void window.yiben.reader.setPrefs(chapter.series_id, { mode }).catch(() => {})
       }
     },
     [chapter]
@@ -382,17 +437,25 @@ export function ReaderPage() {
         if (s.mode === 'webtoon') {
           const target = s.page + delta
           if (target < 0) {
+            // 嵌入话的第 0 页再往上：滚回上一话（路由话）末页，观察者自动切回归属
+            const emb = embeddedRef.current
+            if (emb && emb.start > 0) {
+              const routeLast = emb.start - 1
+              s.setPage(routeLast)
+              scrollStripTo(routeLast)
+              return
+            }
             goPrev()
             return
           }
           if (s.pageCount > 0 && target > s.pageCount - 1) {
+            // 跨话拼接后条带末尾属于拼接话：到底就停住，顶栏可继续跳话
+            if (embeddedRef.current) return
             goNext()
             return
           }
           s.setPage(target)
-          document
-            .querySelector(`img[data-page="${target}"], div[data-page="${target}"]`)
-            ?.scrollIntoView({ block: 'start' })
+          scrollStripTo(target)
           return
         }
         if (delta > 0) goNext()
@@ -416,20 +479,25 @@ export function ReaderPage() {
           break
         case 'Home':
           e.preventDefault()
-          if (s.mode === 'webtoon') jumpTo(activeId, 0)
-          else s.setPage(0)
+          if (s.mode === 'webtoon') {
+            // 条漫：回到条带最顶（路由话第 1 页），滚回去的路上观察者会自动软切换归属
+            s.setPage(0)
+            scrollStripTo(0, true)
+          } else s.setPage(0)
           break
         case 'End':
           e.preventDefault()
-          if (s.mode === 'webtoon') jumpTo(activeId, s.pageCount - 1)
-          else s.setPage(s.pageCount - 1)
+          if (s.mode === 'webtoon') {
+            s.setPage(s.pageCount - 1)
+            scrollStripTo(s.pageCount - 1)
+          } else s.setPage(s.pageCount - 1)
           break
         case 'd':
         case 'D':
           // 顶栏按钮/帮助面板均标注 D 为方向切换（此前误绑成单双页切换）
           s.patch({ rtl: !s.rtl })
           if (chapter) {
-            void window.yiben.reader.setPrefs(chapter.series_id, { rtl: !s.rtl })
+            void window.yiben.reader.setPrefs(chapter.series_id, { rtl: !s.rtl }).catch(() => {})
           }
           break
         case 'c':
@@ -520,18 +588,18 @@ export function ReaderPage() {
         <PdfViewer
           info={info}
           initialPage={startPage}
-          onCurrentPage={(p) => store.setPage(p)}
+          onCurrentPage={(p) => setPage(p)}
         />
-      ) : store.mode === 'webtoon' ? (
+      ) : mode === 'webtoon' ? (
         <WebtoonViewer
           chapterId={activeId}
-          onCurrentPage={(p) => store.setPage(p)}
+          onPosition={onPosition}
           onNext={goNext}
         />
       ) : (
         // 点击区只翻页不跨话（store 的 next/prev 自带章节内钳位）；
         // 跨话走顶栏按钮、末页卡片或键盘（到末页自动进下一话）
-        <ImageViewer key={`${activeId}-${store.mode}`} chapterId={activeId} />
+        <ImageViewer key={`${activeId}-${mode}`} chapterId={activeId} />
       )}
 
       <ReaderChrome
@@ -554,6 +622,12 @@ export function ReaderPage() {
         onHintClose={() => setHint(null)}
         panel={panel}
         onPanelChange={setPanel}
+        hideEndCard={
+          mode === 'webtoon' &&
+          neighbors?.next != null &&
+          neighbors.next.kind !== 'pdf' &&
+          neighbors.next.page_count > 0
+        }
       />
     </div>
   )

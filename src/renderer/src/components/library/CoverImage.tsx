@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { BookOpen } from 'lucide-react'
 import { coverUrl } from '@shared/types'
 import { cn } from '@/lib/utils'
@@ -29,13 +29,23 @@ export function CoverImage({
 }: CoverImageProps) {
   const [attempt, setAttempt] = useState(0)
   const [failed, setFailed] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // 虚拟滚动滑出后组件卸载：挂起的重试定时器必须清掉，避免对已卸载组件 setState
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current)
+    },
+    []
+  )
 
   const handleError = (): void => {
     if (attempt >= RETRIES) {
       setFailed(true)
       return
     }
-    window.setTimeout(() => setAttempt((a) => a + 1), RETRY_MS)
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(() => setAttempt((a) => a + 1), RETRY_MS)
   }
 
   if (failed) {

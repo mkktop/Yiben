@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { RotateCw } from 'lucide-react'
 import { pageUrl } from '@shared/types'
 import { spreadPages, useReaderStore } from '@/stores/reader'
@@ -194,18 +194,115 @@ function ZoomBtn({ label, onClick }: { label: string; onClick: () => void }) {
   )
 }
 
-/** 条漫（Webtoon）模式：垂直连续滚动 */
+/** 条漫条带里一话的占位信息（拼接话从其前一话的末尾起算全局页号） */
+interface StripChapter {
+  id: number
+  title: string
+  pageCount: number
+  /** 本话在条带里的全局起始页号 */
+  start: number
+}
+
+/** 视口当前落在哪一话的哪一页（跨话连续滚动的进度归属依据） */
+interface StripPos {
+  chapterId: number
+  title: string
+  page: number
+  pageCount: number
+  start: number
+}
+
+/**
+ * 条漫（Webtoon）模式：垂直连续滚动。
+ * 临近本话末尾（差 2 页）自动经 neighbors 拼接下一话到同一条带里，滚动不中断、
+ * 可跨多话链式拼接；视口跨过分界时回报新的章节归属，外层据此软切换进度话。
+ * data-page 用条带全局页号（观察者跨话取「最小跨越页」需要单调序）。
+ */
 export function WebtoonViewer({
   chapterId,
-  onCurrentPage = () => {},
+  onPosition = () => {},
   onNext
-}: ImageViewerProps) {
-  const pageCount = useReaderStore((s) => s.pageCount)
+}: {
+  chapterId: number
+  onPosition?: (pos: StripPos) => void
+  onNext?: () => void
+}) {
+  const storePageCount = useReaderStore((s) => s.pageCount)
   const ref = useRef<HTMLDivElement>(null)
 
-  useCurrentPageObserver(ref, onCurrentPage)
+  /** 拼接进来的后续话；换话（路由变化）时清空重来 */
+  const [extras, setExtras] = useState<StripChapter[]>([])
+  const [fetching, setFetching] = useState(false)
+  const extrasRef = useRef(extras)
+  extrasRef.current = extras
+  /** 条带末话确认拼不出下一话（没有下一话/PDF/页数未知） */
+  const noMoreRef = useRef(false)
 
-  // 滚到底部再往下滚 → 交由外层进下一话
+  // 基准话页数：软切换后 store 的 pageCount 会变成拼接话的，条带布局要用冻结值
+  const baseRef = useRef(storePageCount)
+  if (extras.length === 0) baseRef.current = storePageCount
+  const baseCount = extras.length > 0 ? baseRef.current : storePageCount
+
+  useEffect(() => {
+    setExtras([])
+    noMoreRef.current = false
+  }, [chapterId])
+
+  const tail = extras.length > 0 ? extras[extras.length - 1] : null
+  const tailId = tail ? tail.id : chapterId
+  const nextStart = tail ? tail.start + tail.pageCount : baseCount
+
+  const tryAppend = (): void => {
+    if (fetching) return
+    setFetching(true)
+    void window.yiben.reader
+      .neighbors(tailId)
+      .then((n) => {
+        const nx = n?.next
+        // PDF 与页数未知（云端未下载）的话拼不进条带，标记到底并走外层的进下一话
+        if (!nx || nx.kind === 'pdf' || nx.page_count <= 0) {
+          noMoreRef.current = true
+          return
+        }
+        setExtras((list) => {
+          if (list.some((c) => c.id === nx.id)) return list // 重复触发防御
+          return [...list, { id: nx.id, title: nx.title, pageCount: nx.page_count, start: nextStart }]
+        })
+        noMoreRef.current = false
+      })
+      .catch(() => {})
+      .finally(() => setFetching(false))
+  }
+  const tryAppendRef = useRef(tryAppend)
+  tryAppendRef.current = tryAppend
+
+  /** 条带全局页号 → 视口所在话与话内局部页码 */
+  const locate = (global: number): StripPos => {
+    for (let i = extras.length - 1; i >= 0; i--) {
+      const c = extras[i]
+      if (global >= c.start) {
+        return {
+          chapterId: c.id,
+          title: c.title,
+          page: global - c.start,
+          pageCount: c.pageCount,
+          start: c.start
+        }
+      }
+    }
+    return { chapterId, title: '', page: global, pageCount: baseCount, start: 0 }
+  }
+
+  useCurrentPageObserver(ref, (global) => {
+    onPosition(locate(global))
+    // 距条带末尾（nextStart = 拼接话的全局起点）不足 2 页就提前拼接，滚动到分界时不顿挫
+    if (baseCount > 0 && !noMoreRef.current && global >= nextStart - 2) {
+      tryAppendRef.current()
+    }
+  })
+
+  // 滚到底部再往下滚：还能拼就拼；确实没有可拼的话时交由外层（仅限尚未拼接过，
+  // 否则条带末话的下一话与路由话的下一话不是同一话，交给外层会跳错）
   const atBottom = useRef(false)
   useEffect(() => {
     const el = ref.current
@@ -214,10 +311,13 @@ export function WebtoonViewer({
       atBottom.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 4
     }
     const onWheel = (e: WheelEvent): void => {
-      if (e.deltaY > 0 && atBottom.current && onNext) {
-        e.preventDefault()
-        onNext()
+      if (e.deltaY <= 0 || !atBottom.current) return
+      e.preventDefault()
+      if (noMoreRef.current) {
+        if (extrasRef.current.length === 0) onNext?.()
+        return
       }
+      tryAppendRef.current()
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     el.addEventListener('wheel', onWheel, { passive: false })
@@ -230,7 +330,7 @@ export function WebtoonViewer({
   return (
     <div ref={ref} className="h-full overflow-y-auto bg-black">
       <div className="mx-auto max-w-3xl">
-        {Array.from({ length: pageCount }, (_, p) => (
+        {Array.from({ length: baseCount }, (_, p) => (
           <PageImage
             key={p}
             src={pageUrl(chapterId, p)}
@@ -238,6 +338,24 @@ export function WebtoonViewer({
             dataPage={p}
             className="block w-full"
           />
+        ))}
+        {extras.map((c) => (
+          <Fragment key={c.id}>
+            <div className="my-8 flex items-center gap-3 px-8 text-xs text-white/40">
+              <span className="h-px flex-1 bg-white/10" />
+              下一话 · {c.title}
+              <span className="h-px flex-1 bg-white/10" />
+            </div>
+            {Array.from({ length: c.pageCount }, (_, j) => (
+              <PageImage
+                key={`${c.id}-${j}`}
+                src={pageUrl(c.id, j)}
+                alt={`${c.title} 第 ${j + 1} 页`}
+                dataPage={c.start + j}
+                className="block w-full"
+              />
+            ))}
+          </Fragment>
         ))}
       </div>
     </div>

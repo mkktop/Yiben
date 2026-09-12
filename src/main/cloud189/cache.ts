@@ -5,6 +5,7 @@ import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
 import { basename, dirname, join } from 'path'
 import { cloudCacheDir, cloudDownloadUrl, noteCloudError } from './client'
+import { cloud115CacheDir } from '../cloud115/client'
 import { getSetting } from '../settings'
 import { longPath } from '../util/paths'
 import { backoffDelay, sleep } from '../util/backoff'
@@ -30,6 +31,9 @@ const inflight = new Map<string, Promise<string>>()
 const MAX_CONCURRENT_DOWNLOADS = 3
 let activeDownloads = 0
 const downloadQueue: Array<() => void> = []
+
+/** 连接建立后持续无数据（静默挂起/代理黑洞）多久判定为死连接：3 条同时挂死会占死全部下载槽 */
+const DOWNLOAD_IDLE_TIMEOUT_MS = 30_000
 
 async function withDownloadSlot<T>(fn: () => Promise<T>): Promise<T> {
   if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
@@ -165,17 +169,22 @@ export interface DownloadProgress {
 /**
  * 把云盘文件下载到本地缓存并返回缓存路径。
  * 已存在且大小吻合时直接复用；同一目标的并发调用共享同一次下载。
+ * signal 用于外部取消（离线预取的中止），触发后进行中的下载立即中断。
+ * resolveUrl 由各网盘提供（直链有时效，重试时每次重新取）；缺省为天翼直链。
  */
 export function ensureCached(
   fileId: string,
   familyId: string | undefined,
   destPath: string,
   expectedSize: number,
-  onProgress?: (p: DownloadProgress) => void
+  onProgress?: (p: DownloadProgress) => void,
+  signal?: AbortSignal,
+  resolveUrl?: (fileId: string) => Promise<string>
 ): Promise<string> {
+  const resolve = resolveUrl ?? ((id: string) => cloudDownloadUrl(id, familyId))
   const running = inflight.get(destPath)
   if (running) return running
-  const task = download(fileId, familyId, destPath, expectedSize, onProgress).finally(() => {
+  const task = download(fileId, resolve, destPath, expectedSize, onProgress, signal).finally(() => {
     inflight.delete(destPath)
   })
   inflight.set(destPath, task)
@@ -184,10 +193,11 @@ export function ensureCached(
 
 async function download(
   fileId: string,
-  familyId: string | undefined,
+  resolveUrl: (fileId: string) => Promise<string>,
   destPath: string,
   expectedSize: number,
-  onProgress?: (p: DownloadProgress) => void
+  onProgress?: (p: DownloadProgress) => void,
+  signal?: AbortSignal
 ): Promise<string> {
   const index = await loadIndex()
   touch(index, destPath)
@@ -204,41 +214,70 @@ async function download(
 
   let loaded = 0
   await withDownloadSlot(async () => {
-    // 瞬时失败（网络抖动/直链中途失效）按指数退避重试；会话失效交给 UI 引导
+    // 瞬时失败（网络抖动/直链中途失效/空闲超时）按指数退避重试；会话失效交给 UI 引导
     for (let attempt = 0; ; attempt++) {
-      const url = await cloudDownloadUrl(fileId, familyId)
-      const resp = await fetch(url)
-      if (!resp.ok || !resp.body) {
-        const err = new Error(`云盘下载失败：HTTP ${resp.status}`)
-        await rm(longPath(`${destPath}.part`), { force: true }).catch(() => {})
-        if (noteCloudError(err) === 'session' || attempt >= 2) throw err
-        await sleep(backoffDelay(attempt))
-        continue
+      const url = await resolveUrl(fileId)
+      // 空闲看门狗：连接建立或读流期间持续 30s 收不到数据就中断本次尝试。
+      // fetch 的 signal 在响应头返回后仍然管着 body 流，所以能覆盖整个传输过程；
+      // 每收到一个 chunk 就续期，慢速但活跃的连接不会被误杀。
+      const ctrl = new AbortController()
+      let idleTimer: ReturnType<typeof setTimeout> | null = null
+      const armIdle = (): void => {
+        if (idleTimer) clearTimeout(idleTimer)
+        idleTimer = setTimeout(() => {
+          ctrl.abort(new Error(`云盘下载连接空闲超时（${DOWNLOAD_IDLE_TIMEOUT_MS / 1000}s 无数据）`))
+        }, DOWNLOAD_IDLE_TIMEOUT_MS)
       }
-
-      const total = Number(resp.headers.get('content-length') ?? expectedSize ?? 0)
-      const tmp = `${destPath}.part`
+      const onAbort = (): void => ctrl.abort(new Error('下载已取消'))
+      if (signal) {
+        if (signal.aborted) onAbort()
+        else signal.addEventListener('abort', onAbort, { once: true })
+      }
       try {
-        await pipeline(
-          Readable.fromWeb(resp.body),
-          // 透传式统计进度；pipeline 负责背压，磁盘慢时不会把整个文件堆在内存里
-          async function* (source: AsyncIterable<Buffer>) {
-            for await (const chunk of source) {
-              loaded += chunk.length
-              onProgress?.({ fileId, name: basename(destPath), loaded, total })
-              yield chunk
-            }
-          },
-          createWriteStream(longPath(tmp))
-        )
-        // 下载完成才改名，残缺文件不会被当作缓存命中
-        await rename(longPath(tmp), longPath(destPath))
-        return
-      } catch (err) {
-        await rm(longPath(tmp), { force: true }).catch(() => {})
-        if (noteCloudError(err) === 'session' || attempt >= 2) throw err
-        loaded = 0
-        await sleep(backoffDelay(attempt))
+        armIdle()
+        const resp = await fetch(url, { signal: ctrl.signal })
+        if (!resp.ok || !resp.body) {
+          const err = new Error(`云盘下载失败：HTTP ${resp.status}`)
+          await rm(longPath(`${destPath}.part`), { force: true }).catch(() => {})
+          if (noteCloudError(err) === 'session' || attempt >= 2) throw err
+          await sleep(backoffDelay(attempt))
+          continue
+        }
+
+        const total = Number(resp.headers.get('content-length') ?? expectedSize ?? 0)
+        const tmp = `${destPath}.part`
+        try {
+          await pipeline(
+            Readable.fromWeb(resp.body),
+            // 透传式统计进度；pipeline 负责背压，磁盘慢时不会把整个文件堆在内存里
+            async function* (source: AsyncIterable<Buffer>) {
+              for await (const chunk of source) {
+                armIdle()
+                loaded += chunk.length
+                onProgress?.({ fileId, name: basename(destPath), loaded, total })
+                yield chunk
+              }
+            },
+            createWriteStream(longPath(tmp))
+          )
+          // 完整性校验：响应被静默截断时不能当成完整缓存落盘，
+          // 否则 cachedSizeIfComplete 会永久命中这份毒化缓存
+          if (total > 0 && loaded !== total) {
+            throw new Error(`下载不完整：${loaded}/${total} 字节`)
+          }
+          // 下载完成才改名，残缺文件不会被当作缓存命中
+          await rename(longPath(tmp), longPath(destPath))
+          return
+        } catch (err) {
+          await rm(longPath(tmp), { force: true }).catch(() => {})
+          if (signal?.aborted) throw err
+          if (noteCloudError(err) === 'session' || attempt >= 2) throw err
+          loaded = 0
+          await sleep(backoffDelay(attempt))
+        }
+      } finally {
+        if (idleTimer) clearTimeout(idleTimer)
+        if (signal) signal.removeEventListener('abort', onAbort)
       }
     }
   })
@@ -249,36 +288,46 @@ async function download(
   return destPath
 }
 
+/** 云端缓存根目录（天翼 + 115，共用一套容量上限与 LRU 索引） */
+export function cloudCacheRoots(): string[] {
+  return [cloudCacheDir(), cloud115CacheDir()]
+}
+
 export async function cacheStats(): Promise<{ totalBytes: number; files: number }> {
-  const root = cloudCacheDir()
-  if (!existsSync(longPath(root))) return { totalBytes: 0, files: 0 }
   let totalBytes = 0
   let files = 0
-  // 异步遍历：同步递归 statSync 在上万文件时会把主进程卡住（设置页明显掉帧）
-  const walk = async (dir: string): Promise<void> => {
-    let entries
-    try {
-      entries = await readdir(longPath(dir), { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const entry of entries) {
-      const path = join(dir, entry.name)
-      if (entry.isDirectory()) {
-        await walk(path)
-        continue
-      }
-      if (entry.name === 'index.json' || entry.name.endsWith('.tmp') || entry.name.endsWith('.part')) {
-        continue
-      }
+  for (const root of cloudCacheRoots()) {
+    if (!existsSync(longPath(root))) continue
+    // 异步遍历：同步递归 statSync 在上万文件时会把主进程卡住（设置页明显掉帧）
+    const walk = async (dir: string): Promise<void> => {
+      let entries
       try {
-        totalBytes += (await stat(longPath(path))).size
-        files++
+        entries = await readdir(longPath(dir), { withFileTypes: true })
       } catch {
-        /* ignore */
+        return
+      }
+      for (const entry of entries) {
+        const path = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          await walk(path)
+          continue
+        }
+        if (
+          entry.name === 'index.json' ||
+          entry.name.endsWith('.tmp') ||
+          entry.name.endsWith('.part')
+        ) {
+          continue
+        }
+        try {
+          totalBytes += (await stat(longPath(path))).size
+          files++
+        } catch {
+          /* ignore */
+        }
       }
     }
+    await walk(root)
   }
-  await walk(root)
   return { totalBytes, files }
 }

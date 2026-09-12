@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  AlertTriangle,
+  CopyX,
   Download,
   HardDrive,
+  HeartPulse,
   Loader2,
   RefreshCw,
   RotateCcw,
@@ -15,7 +18,7 @@ import { useUpdateStore } from '@/stores/update'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn, errorMessage } from '@/lib/utils'
-import type { ReaderPrefs } from '@shared/types'
+import type { DiagnoseReport, ReaderPrefs } from '@shared/types'
 
 function fmtBytes(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
@@ -536,6 +539,207 @@ function UpdateSection() {
   )
 }
 
+/** 体检结果的折叠列表项：标题带数量，点击展开明细 */
+function DiagnoseList({
+  label,
+  count,
+  children
+}: {
+  label: string
+  count: number
+  children: React.ReactNode
+}) {
+  return (
+    <details className="group rounded-lg border border-border/60">
+      <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2.5 text-xs transition-colors hover:bg-accent/50">
+        <span className="flex items-center gap-1.5">
+          {count > 0 && <AlertTriangle className="size-3.5 text-amber-500" />}
+          {label}
+        </span>
+        <span className={count > 0 ? 'font-medium' : 'text-muted-foreground'}>{count} 项</span>
+      </summary>
+      <div className="space-y-1.5 border-t border-border/60 px-3 py-2.5">{children}</div>
+    </details>
+  )
+}
+
+/** 库体检：只读诊断四类问题；修复动作（重扫/移出书架）由用户逐项触发 */
+function DiagnoseSection() {
+  const bump = useDataStore((s) => s.bump)
+  const [running, setRunning] = useState(false)
+  const [report, setReport] = useState<DiagnoseReport | null>(null)
+  const [error, setError] = useState('')
+  const [actionError, setActionError] = useState('')
+  const [busySeries, setBusySeries] = useState<number | null>(null)
+
+  const run = (): Promise<void> => {
+    setRunning(true)
+    setError('')
+    return window.yiben.diagnose
+      .run()
+      .then(setReport)
+      .catch((e) => setError(errorMessage(e)))
+      .finally(() => setRunning(false))
+  }
+
+  /** 重扫问题系列后自动再体检一次，让结果保持新鲜 */
+  const rescanSeries = async (seriesId: number): Promise<void> => {
+    setActionError('')
+    setBusySeries(seriesId)
+    try {
+      await window.yiben.series.rescan(seriesId)
+      await run()
+      bump()
+    } catch (e) {
+      setActionError(errorMessage(e))
+    } finally {
+      setBusySeries(null)
+    }
+  }
+
+  /** 移出书架（隐藏，不删数据）：本地同步把该项从重复分组里摘掉 */
+  const removeSeries = async (id: number): Promise<void> => {
+    setActionError('')
+    try {
+      await window.yiben.series.remove(id)
+      if (report) {
+        setReport({
+          ...report,
+          duplicateSeries: report.duplicateSeries
+            .map((g) => g.filter((i) => i.id !== id))
+            .filter((g) => g.length > 1)
+        })
+      }
+      bump()
+    } catch (e) {
+      setActionError(errorMessage(e))
+    }
+  }
+
+  const issues =
+    report &&
+    report.brokenChapters.length +
+      report.emptyChapters.length +
+      report.duplicateSeries.length +
+      (report.orphanThumbBytes > 0 ? 1 : 0)
+
+  return (
+    <section>
+      <h2 className="mb-4 text-sm font-medium text-muted-foreground">库体检</h2>
+      <div className="rounded-xl border p-5">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="grid size-10 place-items-center rounded-lg bg-primary/10">
+              <HeartPulse className="size-5 text-primary" />
+            </div>
+            <div>
+              <p className="text-sm font-medium">检查书库健康状况</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                扫描失败的章节、零页空章节、疑似重复系列、孤儿缩略图。只读诊断，不会改动任何数据
+              </p>
+            </div>
+          </div>
+          <Button size="sm" variant="outline" className="shrink-0" disabled={running} onClick={() => void run()}>
+            {running ? <Loader2 className="animate-spin" /> : <HeartPulse />}
+            {running ? '体检中…' : '开始体检'}
+          </Button>
+        </div>
+
+        {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
+        {actionError && <p className="mt-3 text-xs text-destructive">{actionError}</p>}
+
+        {report && (
+          <div className="mt-4 space-y-2">
+            {issues === 0 && (
+              <p className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5 text-xs text-primary">
+                一切正常，没有发现任何问题。
+              </p>
+            )}
+
+            <DiagnoseList label="损坏章节（扫描列页失败）" count={report.brokenChapters.length}>
+              {report.brokenChapters.length === 0 && (
+                <p className="text-xs text-muted-foreground">没有损坏的章节</p>
+              )}
+              {report.brokenChapters.map((c) => (
+                <div key={c.id} className="flex items-center gap-3 py-1 text-xs">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate">
+                      {c.seriesTitle} · {c.title}
+                    </p>
+                    <p className="truncate text-muted-foreground" title={c.reason}>
+                      {c.reason}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    disabled={busySeries !== null}
+                    onClick={() => void rescanSeries(c.seriesId)}
+                  >
+                    {busySeries === c.seriesId ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <RefreshCw className="size-3" />
+                    )}
+                    重新扫描该系列
+                  </Button>
+                </div>
+              ))}
+            </DiagnoseList>
+
+            <DiagnoseList label="空章节（页数为 0）" count={report.emptyChapters.length}>
+              {report.emptyChapters.length === 0 && <p className="text-xs text-muted-foreground">没有空章节</p>}
+              {report.emptyChapters.map((c) => (
+                <p key={c.id} className="truncate py-0.5 text-xs">
+                  {c.seriesTitle} · {c.title}
+                </p>
+              ))}
+            </DiagnoseList>
+
+            <DiagnoseList label="疑似重复系列（标题一致）" count={report.duplicateSeries.length}>
+              {report.duplicateSeries.length === 0 && (
+                <p className="text-xs text-muted-foreground">没有发现重复系列</p>
+              )}
+              {report.duplicateSeries.map((group, gi) => (
+                <div key={gi} className="rounded-lg border border-border/60 p-2.5">
+                  <div className="space-y-1">
+                    {group.map((item) => (
+                      <div key={item.id} className="flex items-center gap-3 text-xs">
+                        <CopyX className="size-3 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate">{item.title}</p>
+                          <p className="truncate text-muted-foreground">{item.folderPath}</p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 shrink-0 px-2 text-xs text-muted-foreground hover:text-destructive"
+                          onClick={() => void removeSeries(item.id)}
+                        >
+                          <Trash2 className="size-3" />
+                          移出书架
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </DiagnoseList>
+
+            <DiagnoseList label="孤儿页缩略图（章节已删除）" count={report.orphanThumbBytes > 0 ? 1 : 0}>
+              <p className="py-0.5 text-xs text-muted-foreground">
+                占用 {fmtBytes(report.orphanThumbBytes)}。体检只做统计，不会自动删除；可在文件管理器
+                中清理 thumbs/pages 下的同名目录，或等下次全库重扫后自然对齐。
+              </p>
+            </DiagnoseList>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
 export function SettingsPage() {
   const { mode, setMode } = useThemeStore()
 
@@ -573,6 +777,7 @@ export function SettingsPage() {
       <GeneralSection />
       <CloudCacheSection />
       <DataSection />
+      <DiagnoseSection />
       <UpdateSection />
     </div>
   )

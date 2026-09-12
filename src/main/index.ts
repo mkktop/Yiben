@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, screen } from 'electron'
+import { app, shell, BrowserWindow, screen, dialog } from 'electron'
 import { join } from 'path'
 import { writeFile } from 'fs/promises'
 import { is } from '@electron-toolkit/utils'
@@ -10,12 +10,77 @@ import { runSelfTest } from './selftest'
 import { getSetting, setSetting } from './settings'
 import { startWatchers } from './watcher'
 import { setupAutoUpdate } from './updater'
+import { handleArgv, handleFilePath, markWindowReady } from './openFile'
 
 // 必须在 app ready 之前注册自定义协议
 registerProtocol()
 
+// macOS：访达双击 /「打开方式」经 open-file 进来（冷启动时在 ready 之前触发，先收下排队）
+app.on('open-file', (_e, path) => handleFilePath(path))
+
+// 单实例锁：并发实例会各自起扫描、各写一份 SQLite（WAL 也会互相卡）；
+// 同时它是文件关联的前提——第二个实例把文件路径交给已有实例后退出
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  // 第二个实例启动时：把已有窗口拉到前台，并接手它带来的文件参数
+  app.on('second-instance', (_e, argv) => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (win) {
+      if (win.isMinimized()) win.restore()
+      win.focus()
+    }
+    handleArgv(argv)
+  })
+  bootstrap()
+}
+
+function bootstrap(): void {
+  app.whenReady()
+    .then(() => {
+      // YIBEN_A11Y=1 时向系统暴露网页无障碍树（供桌面自动化测试 / 读屏器使用）
+      if (process.env['YIBEN_A11Y']) app.accessibilitySupportEnabled = true
+
+      openDb()
+      attachProtocolHandlers()
+      registerIpc()
+      // 打包版挂 electron-updater 监听（进度/就绪广播）；dev 下是空操作
+      setupAutoUpdate()
+
+      // 本地库文件监听（可在设置里关闭）；自测模式不启动
+      if (!process.env['YIBEN_SELFTEST'] && getSetting('autoRescan', true)) startWatchers()
+
+      const fixture = process.env['YIBEN_SELFTEST']
+      if (fixture) {
+        void runSelfTest(fixture)
+        return
+      }
+
+      createWindow()
+
+      // 冷启动带文件参数（双击文件/「打开方式」）：窗口建好后解析并打开
+      handleArgv(process.argv)
+
+      app.on('activate', function () {
+        if (BrowserWindow.getAllWindows().length === 0) createWindow()
+      })
+    })
+    .catch((err) => {
+      // openDb 抛错（磁盘满/DB 损坏）等启动失败不能静默白屏
+      console.error('[boot] 初始化失败:', err)
+      dialog.showErrorBox('一本启动失败', err instanceof Error ? err.message : String(err))
+      app.quit()
+    })
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit()
+  })
+}
+
 // 开发验证用：YIBEN_SCREENSHOT=<png路径>，可选 YIBEN_ROUTE=<hash路由> / YIBEN_THEME=light
+// is.dev 门控：这些钩子允许向渲染进程注入任意 JS，不能跟着编译进生产包
 async function debugScreenshot(win: BrowserWindow): Promise<void> {
+  if (!is.dev) return
   const target = process.env['YIBEN_SCREENSHOT']
   if (!target) return
   win.webContents.on('console-message', (_e, level, message) => {
@@ -127,10 +192,13 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
     void debugScreenshot(mainWindow)
+    // 渲染层可见了：冷启动暂存的待打开章节此刻补发广播
+    markWindowReady()
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    void shell.openExternal(details.url)
+    // 只放行常见网页协议交给系统打开；file:/yiben:/其他自定义协议一律不外开
+    if (/^(https?|mailto):/i.test(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
@@ -140,33 +208,3 @@ function createWindow(): void {
     void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 }
-
-app.whenReady().then(() => {
-  // YIBEN_A11Y=1 时向系统暴露网页无障碍树（供桌面自动化测试 / 读屏器使用）
-  if (process.env['YIBEN_A11Y']) app.accessibilitySupportEnabled = true
-
-  openDb()
-  attachProtocolHandlers()
-  registerIpc()
-  // 打包版挂 electron-updater 监听（进度/就绪广播）；dev 下是空操作
-  setupAutoUpdate()
-
-  // 本地库文件监听（可在设置里关闭）；自测模式不启动
-  if (!process.env['YIBEN_SELFTEST'] && getSetting('autoRescan', true)) startWatchers()
-
-  const fixture = process.env['YIBEN_SELFTEST']
-  if (fixture) {
-    void runSelfTest(fixture)
-    return
-  }
-
-  createWindow()
-
-  app.on('activate', function () {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
-})
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
-})

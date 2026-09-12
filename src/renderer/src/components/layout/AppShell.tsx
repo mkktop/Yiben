@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Cloud, Home, Library, Moon, Search, Settings, Sun, X } from 'lucide-react'
+import { BarChart3, Cloud, Home, Library, Moon, Search, Settings, Sun, X } from 'lucide-react'
 import { useThemeStore } from '@/stores/theme'
 import { useDataStore } from '@/stores/data'
 import { useUpdateStore } from '@/stores/update'
@@ -13,6 +13,7 @@ const navItems = [
   { to: '/', label: '首页', icon: Home },
   { to: '/library', label: '书架', icon: Library },
   { to: '/cloud', label: '网盘', icon: Cloud },
+  { to: '/stats', label: '统计', icon: BarChart3 },
   { to: '/settings', label: '设置', icon: Settings }
 ]
 

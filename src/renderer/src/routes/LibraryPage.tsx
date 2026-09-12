@@ -12,7 +12,7 @@ import { useAsync } from '@/hooks/useAsync'
 import { useDataStore } from '@/stores/data'
 import { CoverGrid, EmptyHint } from '@/components/library/CoverGrid'
 import { errorMessage } from '@/lib/utils'
-import type { Series, SeriesFilter } from '@shared/types'
+import type { Series, SeriesFilter, ShelfInfo } from '@shared/types'
 
 interface LibraryRow {
   id: number
@@ -28,6 +28,13 @@ const filters: Array<{ key: SeriesFilter; label: string }> = [
   { key: 'read', label: '最近阅读' },
   { key: 'recent', label: '最近添加' }
 ]
+
+/** 筛选 chip 的选中/常态样式（类型筛选与书架 chip 共用） */
+function chipClass(active: boolean): string {
+  return active
+    ? 'rounded-full bg-primary px-3.5 py-1.5 text-xs font-medium text-primary-foreground'
+    : 'rounded-full bg-muted px-3.5 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground'
+}
 
 /** 单次拉取上限；超出时明确提示，不再静默截断 */
 const MAX_SERIES = 5000
@@ -84,7 +91,8 @@ function LibraryManager({
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{lib.name}</p>
                   <p className="truncate text-xs text-muted-foreground">
-                    {lib.kind === 'cloud189' ? '天翼云盘' : '本地'} · {lib.path}
+                    {lib.kind === 'cloud189' ? '天翼云盘' : lib.kind === '115' ? '115 网盘' : '本地'} ·{' '}
+                    {lib.path}
                   </p>
                 </div>
                 {confirmId === lib.id ? (
@@ -122,7 +130,7 @@ function LibraryManager({
               </div>
               {confirmId === lib.id && (
                 <p className="mt-1.5 pl-12 text-xs text-destructive">
-                  将从书架移除该库的全部漫画与阅读进度，{lib.kind === 'cloud189' && '云端缓存及'}
+                  将从书架移除该库的全部漫画与阅读进度，{lib.kind !== 'local' && '云端缓存及'}
                   原文件不受影响。
                 </p>
               )}
@@ -147,6 +155,8 @@ export function LibraryPage() {
   const bump = useDataStore((s) => s.bump)
   const query = useDataStore((s) => s.query)
   const [filter, setFilter] = useState<SeriesFilter>('all')
+  /** 虚拟书架筛选；null = 全部 */
+  const [shelfId, setShelfId] = useState<number | null>(null)
   const [scanning, setScanning] = useState(false)
   const [managing, setManaging] = useState(false)
   const [selectMode, setSelectMode] = useState(false)
@@ -159,15 +169,17 @@ export function LibraryPage() {
     () => window.yiben.libraries.list(),
     [version]
   )
+  const { data: shelves } = useAsync<ShelfInfo[]>(() => window.yiben.shelves.list(), [version])
   const { data: series, error: seriesError } = useAsync<Series[]>(
     () =>
       window.yiben.series.list({
         query: query.trim() || undefined,
         filter,
+        shelfId: shelfId ?? undefined,
         // 多取一条用来判断是否被截断
         limit: MAX_SERIES + 1
       }),
-    [version, query, filter]
+    [version, query, filter, shelfId]
   )
 
   const truncated = (series?.length ?? 0) > MAX_SERIES
@@ -295,15 +307,7 @@ export function LibraryPage() {
         <div className="flex items-center justify-between">
           <div className="flex gap-2">
             {filters.map((f) => (
-              <button
-                key={f.key}
-                onClick={() => setFilter(f.key)}
-                className={
-                  filter === f.key
-                    ? 'rounded-full bg-primary px-3.5 py-1.5 text-xs font-medium text-primary-foreground'
-                    : 'rounded-full bg-muted px-3.5 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground'
-                }
-              >
+              <button key={f.key} onClick={() => setFilter(f.key)} className={chipClass(filter === f.key)}>
                 {f.label}
               </button>
             ))}
@@ -316,6 +320,24 @@ export function LibraryPage() {
             <span className="text-xs text-muted-foreground">搜索“{query.trim()}”的结果</span>
           ) : null}
         </div>
+
+        {/* 虚拟书架分组（SeriesPage 的「书架与标签」里创建）；与类型筛选叠加生效 */}
+        {(shelves?.length ?? 0) > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => setShelfId(null)} className={chipClass(shelfId === null)}>
+              全部书架
+            </button>
+            {shelves!.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => setShelfId(shelfId === s.id ? null : s.id)}
+                className={chipClass(shelfId === s.id)}
+              >
+                {s.name}
+              </button>
+            ))}
+          </div>
+        )}
 
         {batchError && (
           <p className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">

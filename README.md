@@ -1,8 +1,8 @@
 # 一本 Yiben
 
-精美的本地 + 天翼云盘漫画阅读器（Electron + React）。
+精美的本地 + 天翼云盘 / 115 网盘漫画阅读器（Electron + React）。
 
-把漫画文件夹或天翼云盘目录加进书架即可阅读：本地支持散图文件夹与 CBZ/ZIP、CBR/RAR、CB7/7Z、CBT/TAR、EPUB、PDF，图片含 JPG/PNG/WebP/AVIF/GIF/BMP/APNG/SVG；伪装扩展名（如 zip 存成 .cbr）按文件头魔数自动纠正；
+把漫画文件夹或云盘目录加进书架即可阅读：本地支持散图文件夹与 CBZ/ZIP、CBR/RAR、CB7/7Z、CBT/TAR、EPUB、PDF，图片含 JPG/PNG/WebP/AVIF/GIF/BMP/APNG/SVG；伪装扩展名（如 zip 存成 .cbr）按文件头魔数自动纠正；
 云端目录自动识别「单系列」与「多系列」两种布局，读过的内容会缓存到本地，断网也能看。
 
 ## 功能
@@ -20,6 +20,7 @@
   - **图片加载失败自动重试**（云端瞬时报错不再留裂图，仍失败可手动重试）
 - **阅读偏好**：按系列记忆 + 全局默认值（设置页可配新书默认模式/适配/方向）
 - **天翼云盘**：个人云 / 家庭云，凭据经系统级加密保存在本机；云端缓存带容量上限与 LRU 清理，可按系列查看和清理占用
+- **115 网盘**：扫码登录（cookie 经系统级加密保存在本机），目录挂载 / 扫描 / 阅读 / 离线缓存与天翼云盘同一套体验
   - **Range 直读**：云端 zip/CBZ 经下载直链的 HTTP Range 按页取字节，首屏零下载秒开（直链已实测支持 206；不支持时自动回退整包下载）
   - **离线缓存**：整系列预取到本地（章节级进度、可取消），出差断网场景可用
   - 并发下载限流（同时最多 3 个）与同页请求去重
@@ -36,7 +37,7 @@ pnpm dev        # 开发（electron-vite dev）
 pnpm typecheck  # 主进程 + 渲染进程类型检查
 pnpm test       # 单元测试（vitest）
 pnpm build      # 构建到 out/
-pnpm dist       # 打包（electron-builder，Windows：nsis + portable）
+pnpm dist       # 打包（electron-builder，Windows：nsis）
 ```
 
 ## 快捷键（阅读器）
@@ -67,6 +68,8 @@ src/
   main/                 主进程
     archives/           压缩包驱动（folder / zip / epub / rar / 7z / tar，魔数嗅探兜底），带 LRU 缓存
     cloud189/           天翼云盘：登录、列目录、下载缓存、扫描
+    cloud115/           115 网盘：扫码登录、列目录、阅读取页（解析逻辑独立可单测）
+    cloud/              云盘共用管线：扫描器（provider 描述符注入）
     scanner/            本地库扫描、文件名解析、ComicInfo.xml
     db/                 SQLite（schema 迁移、FTS5 搜索、进度）
     protocol.ts         yiben:// 自定义协议
@@ -101,7 +104,7 @@ Windows 下为 `%APPDATA%\一本 Yiben\`：
 - `yiben.db` — SQLite（书库、系列、章节、进度、设置）
 - `thumbs/series-<id>.webp` — 系列封面
 - `thumbs/pages/<chapterId>/` — 页缩略图（上限 256MB，超出按最久未用回收）
-- `cache/cloud189/` — 云端缓存（`index.json` 为 LRU 索引，容量上限见设置页）
+- `cache/cloud189/`、`cache/cloud115/` — 云端缓存（共用一套 LRU 索引 `index.json`，容量上限见设置页）
 
 删除书库会清掉其缓存产物；「移出书架」只是隐藏，不删进度。
 
@@ -126,3 +129,9 @@ Windows 下为 `%APPDATA%\一本 Yiben\`：
 
 - 官方「家庭云」界面展示的内容实际在 `我的应用/家庭云` 子目录下，open API 的 `-11` 根目录只返回系统默认空文件夹，因此列目录时会自动下钻对齐官方视图（见 `cloud189/client.ts`）。
 - 下载直链带 XML 实体转义（`&amp;`），不解码就去请求会因参数失效返回 403，必须解码后再 fetch。
+
+## 115 网盘接入备注
+
+- 登录走 web 扫码链路（`qrcodeapi.115.com` 取 token 与官方渲染的二维码图片 → 轮询 `get/status` → `passportapi` 以 tv 设备身份换 cookie），tv 设备可避免顶掉手机/网页端已登录的会话；cookie（UID/CID/SEID）经 safeStorage 加密落盘。状态轮询在 GET 被网络中间层静默断开时自动降级 POST 表单重试。
+- `webapi.115.com/files` 已改为只收 POST 表单（GET 一律 405）；下载直链按 p115client 的做法以空 UA 请求，换取与 UA 无关的 CDN 链接。
+- 115 的 web 接口对频率敏感且对海外/异常网络环境有封锁：所有 API 调用经 400ms 最小间隔的串行队列，返回 HTML 拦截页时给出可读错误；会话失效（errNo 990001）与限流经全局 Toast 提示。

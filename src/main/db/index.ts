@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { join } from 'path'
+import type { ShelfInfo, TagInfo } from '../../shared/types'
 
 export interface LibraryRow {
   id: number
@@ -67,6 +68,12 @@ export function openDb(): Database.Database {
   db.pragma('foreign_keys = ON')
   migrate(db)
   return db
+}
+
+/** 关闭连接（单元测试收尾用；应用生命周期里 DB 常驻不关） */
+export function closeDb(): void {
+  db?.close()
+  db = undefined as unknown as Database.Database
 }
 
 function migrate(db: Database.Database): void {
@@ -150,6 +157,38 @@ function migrate(db: Database.Database): void {
       h INTEGER NOT NULL,
       PRIMARY KEY (chapter_id, idx)
     );
+
+    CREATE TABLE IF NOT EXISTS reading_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chapter_id INTEGER REFERENCES chapters(id) ON DELETE CASCADE,
+      series_id INTEGER NOT NULL DEFAULT 0,
+      day TEXT NOT NULL,
+      pages INTEGER NOT NULL,
+      ms INTEGER NOT NULL DEFAULT 0,
+      at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_log_day ON reading_log(day);
+
+    CREATE TABLE IF NOT EXISTS shelves (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      sort INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS series_shelves (
+      series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+      shelf_id INTEGER NOT NULL REFERENCES shelves(id) ON DELETE CASCADE,
+      added_at INTEGER NOT NULL,
+      PRIMARY KEY (series_id, shelf_id)
+    );
+    CREATE TABLE IF NOT EXISTS tags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE
+    );
+    CREATE TABLE IF NOT EXISTS series_tags (
+      series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+      tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+      PRIMARY KEY (series_id, tag_id)
+    );
   `)
 
   // 云盘字段（渐进迁移）
@@ -207,6 +246,8 @@ export function addLibrary(name: string, path: string, kind = 'local'): LibraryR
 
 export function removeLibrary(id: number): void {
   db.prepare('DELETE FROM libraries WHERE id = ?').run(id)
+  // series/章节级联删除后，可能留下没人引用的标签行
+  pruneOrphanTags()
 }
 
 export function setLibraryCloudMeta(
@@ -268,12 +309,15 @@ export interface SeriesMetaPatch {
   description?: string | null
 }
 
+/** patch key 白名单：key 会拼进 SQL 列名，渲染层传来的字段名必须先过这一关（纵深防御） */
+const META_FIELDS = new Set(['title', 'author', 'status', 'tags', 'description'])
+
 /** 手动编辑元数据：只改传入的字段，并打上 meta_edited 防止重扫覆盖 */
 export function updateSeriesMeta(id: number, patch: SeriesMetaPatch): void {
   const fields: string[] = []
   const params: Record<string, unknown> = { id }
   for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) continue
+    if (value === undefined || !META_FIELDS.has(key)) continue
     fields.push(`${key} = @${key}`)
     params[key] = value
   }
@@ -322,6 +366,7 @@ export function retireSeriesNotIn(libraryId: number, keepPaths: string[]): Retir
     del.run(row.id)
     result.deletedSeries.push(row.id)
   }
+  pruneOrphanTags()
   return result
 }
 
@@ -427,6 +472,8 @@ export function markSeriesMetaProbed(seriesId: number): void {
   return { seriesIds, chapterIds }
 }
 
+let upsertChapterStmt: Database.Statement | null = null
+
 export function upsertChapter(c: {
   series_id: number
   title: string
@@ -441,33 +488,46 @@ export function upsertChapter(c: {
   cloud_file_id?: string | null
   scan_error?: string | null
 }): number {
-  const row = db
-    .prepare(
-      `INSERT INTO chapters (series_id, title, volume, number, sort_index, path, kind, page_count, size, mtime, cloud_file_id, scan_error)
-       VALUES (@series_id, @title, @volume, @number, @sort_index, @path, @kind, @page_count, @size, @mtime, @cloud_file_id, @scan_error)
-       ON CONFLICT(path) DO UPDATE SET
-         series_id = excluded.series_id,
-         title = excluded.title,
-         volume = excluded.volume,
-         number = excluded.number,
-         sort_index = excluded.sort_index,
-         kind = excluded.kind,
-         page_count = excluded.page_count,
-         size = excluded.size,
-         mtime = excluded.mtime,
-         cloud_file_id = excluded.cloud_file_id,
-         scan_error = excluded.scan_error
-       RETURNING id`
-    )
-    .get({ cloud_file_id: null, scan_error: null, ...c }) as { id: number }
+  // 扫描时逐章调用：语句只编译一次（每次翻页/扫描重新 prepare 会白白阻塞事件循环）
+  upsertChapterStmt ??= db.prepare(
+    `INSERT INTO chapters (series_id, title, volume, number, sort_index, path, kind, page_count, size, mtime, cloud_file_id, scan_error)
+     VALUES (@series_id, @title, @volume, @number, @sort_index, @path, @kind, @page_count, @size, @mtime, @cloud_file_id, @scan_error)
+     ON CONFLICT(path) DO UPDATE SET
+       series_id = excluded.series_id,
+       title = excluded.title,
+       volume = excluded.volume,
+       number = excluded.number,
+       sort_index = excluded.sort_index,
+       kind = excluded.kind,
+       page_count = excluded.page_count,
+       size = excluded.size,
+       mtime = excluded.mtime,
+       cloud_file_id = excluded.cloud_file_id,
+       scan_error = excluded.scan_error
+     RETURNING id`
+  )
+  const row = upsertChapterStmt.get({ cloud_file_id: null, scan_error: null, ...c }) as {
+    id: number
+  }
   return row.id
 }
 
-export function deleteChaptersNotIn(seriesId: number, keepPaths: string[]): void {
+/** 逐章 upsert 的批量版：整批包进一个事务，大库扫描不会一条一提交地刷盘 */
+export function upsertChapters(
+  list: Array<Parameters<typeof upsertChapter>[0]>
+): void {
+  const tx = db.transaction((items: Array<Parameters<typeof upsertChapter>[0]>) => {
+    for (const c of items) upsertChapter(c)
+  })
+  tx(list)
+}
+
+/** 删除系列下已不在 keepPaths 里的章节，返回被删章节 id（调用方据此清页缩略图等产物） */
+export function deleteChaptersNotIn(seriesId: number, keepPaths: string[]): number[] {
   const stmt = db.prepare(
-    `DELETE FROM chapters WHERE series_id = ? AND path NOT IN (${keepPaths.map(() => '?').join(',')})`
+    `DELETE FROM chapters WHERE series_id = ? AND path NOT IN (${keepPaths.map(() => '?').join(',')}) RETURNING id`
   )
-  stmt.run(seriesId, ...keepPaths)
+  return (stmt.all(seriesId, ...keepPaths) as { id: number }[]).map((r) => r.id)
 }
 
 export function setSeriesCover(seriesId: number, coverPath: string | null): void {
@@ -555,6 +615,10 @@ export interface SeriesListOptions {
   libraryId?: number
   query?: string
   filter?: 'all' | 'unread' | 'reading' | 'read' | 'recent'
+  /** 归入某虚拟书架 */
+  shelfId?: number
+  /** 自定义标签（关联表），多个标签 AND 语义 */
+  tags?: string[]
   limit?: number
   offset?: number
 }
@@ -566,6 +630,20 @@ export function listSeries(opts: SeriesListOptions = {}): SeriesRow[] {
   if (opts.libraryId) {
     conds.push('s.library_id = @libraryId')
     params.libraryId = opts.libraryId
+  }
+  if (opts.shelfId) {
+    conds.push('s.id IN (SELECT series_id FROM series_shelves WHERE shelf_id = @shelfId)')
+    params.shelfId = opts.shelfId
+  }
+  if (opts.tags && opts.tags.length > 0) {
+    // 每个标签一个 EXISTS 子查询：AND 语义（同时带有全部指定标签才算命中）
+    opts.tags.forEach((tag, i) => {
+      conds.push(
+        `EXISTS (SELECT 1 FROM series_tags st JOIN tags tg ON tg.id = st.tag_id
+                 WHERE st.series_id = s.id AND tg.name = @tagName${i})`
+      )
+      params[`tagName${i}`] = tag
+    })
   }
   if (opts.query) {
     const words = opts.query
@@ -633,6 +711,11 @@ export function getChapter(id: number): (ChapterRow & { series_title: string }) 
     .get(id) as (ChapterRow & { series_title: string }) | undefined
 }
 
+/** 按文件路径找章节（系统文件关联：双击文件扫描入库后取章节 id） */
+export function getChapterByPath(path: string): ChapterRow | undefined {
+  return db.prepare('SELECT * FROM chapters WHERE path = ?').get(path) as ChapterRow | undefined
+}
+
 export interface ChapterSource {
   libraryKind: string
   familyId: string | null
@@ -669,7 +752,7 @@ export interface CloudChapterCacheRow {
   cloudFileId: string | null
 }
 
-/** 云盘书库的全部章节（缓存统计/清理用） */
+/** 云盘书库的全部章节（缓存统计/清理用）：天翼云盘与 115 网盘 */
 export function cloudChapterRows(): CloudChapterCacheRow[] {
   return db
     .prepare(
@@ -678,7 +761,7 @@ export function cloudChapterRows(): CloudChapterCacheRow[] {
        FROM chapters c
        JOIN series s ON s.id = c.series_id
        JOIN libraries l ON l.id = s.library_id
-       WHERE l.kind = 'cloud189'`
+       WHERE l.kind IN ('cloud189', '115')`
     )
     .all() as CloudChapterCacheRow[]
 }
@@ -692,14 +775,43 @@ export interface ProgressRow {
   updated_at: number
 }
 
+let saveProgressStmt: Database.Statement | null = null
+let oldPageStmt: Database.Statement | null = null
+let chapterSeriesStmt: Database.Statement | null = null
+let logInsertStmt: Database.Statement | null = null
+
+/** 本地时区的 YYYY-MM-DD（toLocaleDateString('sv') 恰好输出 ISO 形态） */
+function localDay(d: Date = new Date()): string {
+  return d.toLocaleDateString('sv')
+}
+
 export function saveProgress(chapterId: number, page: number, completed: boolean): void {
-  db.prepare(
+  // 翻页即触发（节流后仍然高频）：语句只编译一次
+  saveProgressStmt ??= db.prepare(
     `INSERT INTO progress (chapter_id, page, completed, updated_at) VALUES (?, ?, ?, ?)
      ON CONFLICT(chapter_id) DO UPDATE SET
        page = excluded.page,
        completed = excluded.completed,
        updated_at = excluded.updated_at`
-  ).run(chapterId, page, completed ? 1 : 0, Date.now())
+  )
+  // 阅读日志埋点：progress 只留每话最新页码，「上周读了多少页」只能靠埋点。
+  // 先取旧页算本次净翻页数（往回翻 delta <= 0 不计）
+  oldPageStmt ??= db.prepare('SELECT page FROM progress WHERE chapter_id = ?')
+  const old = oldPageStmt.get(chapterId) as { page: number } | undefined
+  // 首次记录该话：读到第 page 页（0 基）意味着看了 page+1 页
+  const delta = old ? page - old.page : page + 1
+
+  saveProgressStmt.run(chapterId, page, completed ? 1 : 0, Date.now())
+
+  if (delta > 0) {
+    chapterSeriesStmt ??= db.prepare('SELECT series_id FROM chapters WHERE id = ?')
+    logInsertStmt ??= db.prepare(
+      `INSERT INTO reading_log (chapter_id, series_id, day, pages, ms, at) VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    const ch = chapterSeriesStmt.get(chapterId) as { series_id: number } | undefined
+    // ms（阅读时长）暂不采集，留 0 给未来埋点
+    logInsertStmt.run(chapterId, ch?.series_id ?? 0, localDay(), delta, 0, Date.now())
+  }
 }
 
 export function getProgress(chapterIds: number[]): ProgressRow[] {
@@ -724,20 +836,27 @@ export interface ContinueRow {
 
 /** 首页「继续阅读」：每个系列取最近更新进度的一话，且该话未读完 */
 export function continueReading(limit: number): ContinueRow[] {
+  // 窗口函数取每系列 updated_at 最新（并列时取章节 id 大的）的未完话；
+  // 不用 GROUP BY + HAVING 裸列 = MAX：那依赖 SQLite 的特殊扩展行为，语义脆弱
   return db
     .prepare(
       `SELECT c.id AS chapter_id, c.title AS chapter_title, p.page AS read_page,
               p.completed, p.updated_at, c.page_count,
               s.id AS series_id, s.title AS series_title, s.cover_path
-       FROM progress p
-       JOIN chapters c ON c.id = p.chapter_id
-       JOIN series s ON s.id = c.series_id
-       WHERE s.hidden = 0 AND s.missing = 0 AND p.chapter_id IN (
-         SELECT p2.chapter_id FROM progress p2
+       FROM (
+         SELECT p2.chapter_id AS cid,
+                ROW_NUMBER() OVER (
+                  PARTITION BY c2.series_id
+                  ORDER BY p2.updated_at DESC, p2.chapter_id DESC
+                ) AS rn
+         FROM progress p2
          JOIN chapters c2 ON c2.id = p2.chapter_id
          WHERE p2.completed = 0
-         GROUP BY c2.series_id HAVING p2.updated_at = MAX(p2.updated_at)
-       )
+       ) latest
+       JOIN progress p ON p.chapter_id = latest.cid
+       JOIN chapters c ON c.id = latest.cid
+       JOIN series s ON s.id = c.series_id
+       WHERE latest.rn = 1 AND s.hidden = 0 AND s.missing = 0
        ORDER BY p.updated_at DESC
        LIMIT ?`
     )
@@ -751,6 +870,151 @@ export function recentlyAdded(limit: number): SeriesRow[] {
       'SELECT * FROM series WHERE hidden = 0 AND missing = 0 ORDER BY added_at DESC LIMIT ?'
     )
     .all(limit) as SeriesRow[]
+}
+
+// ---------- 虚拟书架（分组）与自定义标签 ----------
+// 二者都走关联表，与 ComicInfo 导入的 series.tags 列是两套体系，UI 上分开显示。
+
+export function listShelves(): ShelfInfo[] {
+  return db.prepare('SELECT id, name, sort FROM shelves ORDER BY sort, id').all() as ShelfInfo[]
+}
+
+export function createShelf(name: string): ShelfInfo {
+  const trimmed = name.trim()
+  if (!trimmed) throw new Error('书架名称不能为空')
+  const sort = (
+    db.prepare('SELECT COALESCE(MAX(sort), 0) + 1 AS next FROM shelves').get() as { next: number }
+  ).next
+  // 同名创建幂等：直接返回已有书架
+  db.prepare('INSERT INTO shelves (name, sort) VALUES (?, ?) ON CONFLICT(name) DO NOTHING').run(
+    trimmed,
+    sort
+  )
+  return db.prepare('SELECT id, name, sort FROM shelves WHERE name = ?').get(trimmed) as ShelfInfo
+}
+
+export function renameShelf(id: number, name: string): void {
+  const trimmed = name.trim()
+  if (!trimmed) throw new Error('书架名称不能为空')
+  try {
+    const r = db.prepare('UPDATE shelves SET name = ? WHERE id = ?').run(trimmed, id)
+    if (r.changes === 0) throw new Error(`书架不存在：${id}`)
+  } catch (err) {
+    if (err instanceof Error && /UNIQUE/i.test(err.message)) {
+      throw new Error(`书架「${trimmed}」已存在`)
+    }
+    throw err
+  }
+}
+
+/** 删除书架；series_shelves 关联行由外键级联清理 */
+export function removeShelf(id: number): void {
+  db.prepare('DELETE FROM shelves WHERE id = ?').run(id)
+}
+
+/** 系列当前归入的书架 id（弹层回显用） */
+export function seriesShelfIds(seriesId: number): number[] {
+  return (
+    db
+      .prepare('SELECT shelf_id FROM series_shelves WHERE series_id = ? ORDER BY shelf_id')
+      .all(seriesId) as Array<{ shelf_id: number }>
+  ).map((r) => r.shelf_id)
+}
+
+/** 全量替换系列的书架归属：以传入清单为准（空数组 = 全部移出） */
+export function setSeriesShelves(seriesId: number, shelfIds: number[]): void {
+  const ids = [...new Set(shelfIds)]
+  const tx = db.transaction((list: number[]) => {
+    db.prepare('DELETE FROM series_shelves WHERE series_id = ?').run(seriesId)
+    const ins = db.prepare(
+      'INSERT OR IGNORE INTO series_shelves (series_id, shelf_id, added_at) VALUES (?, ?, ?)'
+    )
+    for (const id of list) ins.run(seriesId, id, Date.now())
+  })
+  tx(ids)
+}
+
+export function listTags(): TagInfo[] {
+  return db.prepare('SELECT id, name FROM tags ORDER BY name').all() as TagInfo[]
+}
+
+/** 系列当前的自定义标签名（弹层回显用） */
+export function seriesTagNames(seriesId: number): string[] {
+  return (
+    db
+      .prepare(
+        `SELECT tg.name AS name FROM series_tags st JOIN tags tg ON tg.id = st.tag_id
+         WHERE st.series_id = ? ORDER BY tg.name`
+      )
+      .all(seriesId) as Array<{ name: string }>
+  ).map((r) => r.name)
+}
+
+/** 不再被任何系列引用的标签行清理（防 listTags 越积越多） */
+function pruneOrphanTags(): void {
+  db.prepare('DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM series_tags)').run()
+}
+
+/** 全量替换系列的自定义标签：不存在的 name 自动创建；替换后清孤儿标签 */
+export function setSeriesTags(seriesId: number, names: string[]): void {
+  const cleaned = [...new Set(names.map((n) => n.trim()).filter(Boolean))]
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM series_tags WHERE series_id = ?').run(seriesId)
+    const insTag = db.prepare('INSERT INTO tags (name) VALUES (?) ON CONFLICT(name) DO NOTHING')
+    const getTag = db.prepare('SELECT id FROM tags WHERE name = ?')
+    const insLink = db.prepare(
+      'INSERT OR IGNORE INTO series_tags (series_id, tag_id) VALUES (?, ?)'
+    )
+    for (const name of cleaned) {
+      insTag.run(name)
+      const tag = getTag.get(name) as { id: number }
+      insLink.run(seriesId, tag.id)
+    }
+    pruneOrphanTags()
+  })
+  tx()
+}
+
+// ---------- 阅读统计 ----------
+
+export interface ReadingStats {
+  /** 有阅读记录的日期及其当日页数（升序；只含最近 days 天） */
+  days: Array<{ day: string; pages: number }>
+  /** 截至今天（或昨天）的连续阅读天数 */
+  streak: number
+  totalPages: number
+  totalDays: number
+  bestDay: { day: string; pages: number } | null
+}
+
+/** 阅读统计：热力图与指标卡的数据源。只统计最近 days 天（默认 365） */
+export function readingStats(days = 365): ReadingStats {
+  const windowDays = Number.isFinite(days) && days > 0 ? Math.floor(days) : 365
+  const start = new Date()
+  start.setDate(start.getDate() - (windowDays - 1))
+  const rows = db
+    .prepare(
+      `SELECT day, SUM(pages) AS pages FROM reading_log WHERE day >= ? GROUP BY day ORDER BY day`
+    )
+    .all(localDay(start)) as Array<{ day: string; pages: number }>
+
+  const totalPages = rows.reduce((sum, r) => sum + r.pages, 0)
+  let bestDay: { day: string; pages: number } | null = null
+  for (const r of rows) {
+    if (!bestDay || r.pages > bestDay.pages) bestDay = { day: r.day, pages: r.pages }
+  }
+
+  // 连续天数从今天往回数；今天还没读时从昨天起算（「昨天读了、今天还没翻」不算断）
+  const daySet = new Set(rows.map((r) => r.day))
+  let cursor = new Date()
+  if (!daySet.has(localDay(cursor))) cursor.setDate(cursor.getDate() - 1)
+  let streak = 0
+  while (daySet.has(localDay(cursor))) {
+    streak++
+    cursor.setDate(cursor.getDate() - 1)
+  }
+
+  return { days: rows, streak, totalPages, totalDays: rows.length, bestDay }
 }
 
 // ---------- 跨话导航 ----------

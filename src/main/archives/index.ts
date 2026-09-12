@@ -41,8 +41,10 @@ async function open(path: string, kind: DriverKind): Promise<ArchiveDriver> {
 /**
  * 驱动实例缓存（LRU）：yiben:// 协议的每次请求相互独立，
  * 靠这里避免重复打开压缩包。超限时关闭最久未用的驱动。
+ * RAR/7Z 单实例要整包读内存（RAR 尤甚），设更小的同类上限控制内存峰值。
  */
 const CACHE_MAX = 6
+const CACHE_MAX_BY_KIND: Partial<Record<DriverKind, number>> = { rar: 2, '7z': 4, epub: 4 }
 const cache = new Map<string, { driver: ArchiveDriver; stamp: number }>()
 let clock = 0
 
@@ -68,6 +70,20 @@ export async function getDriver(path: string, isDir: boolean): Promise<ArchiveDr
 
   const driver = await open(path, kind)
   cache.set(key, { driver, stamp: ++clock })
+
+  // 同类上限：先淘汰超出该类型配额的最旧实例（RAR 常驻 6 个大包就是数 GB 内存）
+  const kindLimit = CACHE_MAX_BY_KIND[kind]
+  if (kindLimit !== undefined) {
+    const prefix = `${kind}|`
+    const sameKind = [...cache.entries()].filter(([k]) => k.startsWith(prefix))
+    if (sameKind.length > kindLimit) {
+      sameKind.sort((a, b) => a[1].stamp - b[1].stamp)
+      for (const [k, v] of sameKind.slice(0, sameKind.length - kindLimit)) {
+        cache.delete(k)
+        void v.driver.close().catch(() => {})
+      }
+    }
+  }
 
   if (cache.size > CACHE_MAX) {
     let oldestKey: string | null = null

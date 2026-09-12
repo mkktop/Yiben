@@ -2,7 +2,7 @@ import { mkdir, rm, stat } from 'fs/promises'
 import { join } from 'path'
 import { app } from 'electron'
 import sharp from 'sharp'
-import { getDriver } from './archives'
+import { withDriver } from './archives'
 import { removePageThumbs } from './pageThumb'
 import { ensureChapterPage, readEnsuredPage } from './cloud189/ensure'
 import { longPath } from './util/paths'
@@ -25,19 +25,22 @@ export async function generateCover(
   isDir: boolean
 ): Promise<string | null> {
   try {
-    const driver = await getDriver(chapterPath, isDir)
-    const pages = await driver.listPages()
-    if (pages.length === 0) return null
-    const buf = await driver.readPage(0)
+    // withDriver（开即关）而非 getDriver（LRU 常驻）：封面批量生成时
+    // 不把压缩包句柄和 RAR 整包 Buffer 长期留在缓存里推高 fd/内存峰值
+    return await withDriver(chapterPath, isDir, async (driver): Promise<string | null> => {
+      const pages = await driver.listPages()
+      if (pages.length === 0) return null
+      const buf = await driver.readPage(0)
 
-    const dir = getThumbsDir()
-    await mkdir(dir, { recursive: true })
-    const out = thumbPath(seriesId)
-    await sharp(buf)
-      .resize(400, 560, { fit: 'cover', position: 'top', withoutEnlargement: true })
-      .webp({ quality: 82 })
-      .toFile(longPath(out))
-    return out
+      const dir = getThumbsDir()
+      await mkdir(dir, { recursive: true })
+      const out = thumbPath(seriesId)
+      await sharp(buf)
+        .resize(400, 560, { fit: 'cover', position: 'top', withoutEnlargement: true })
+        .webp({ quality: 82 })
+        .toFile(longPath(out))
+      return out
+    })
   } catch (err) {
     console.warn(`[thumb] 封面生成失败 series=${seriesId}:`, err instanceof Error ? err.message : err)
     return null
@@ -80,12 +83,11 @@ const CLOUD_COVER_MAX_BYTES = 64 * 1024 * 1024
  */
 export async function generateCloudCover(
   seriesId: number,
-  chapter: { id: number; kind: string; size: number },
-  familyId?: string
+  chapter: { id: number; kind: string; size: number }
 ): Promise<string | null> {
   if (chapter.kind !== 'cfolder' && chapter.size > CLOUD_COVER_MAX_BYTES) return null
   try {
-    const result = await ensureChapterPage(chapter.id, 0, familyId)
+    const result = await ensureChapterPage(chapter.id, 0)
     const buf = await readEnsuredPage(result, 0)
 
     const dir = getThumbsDir()

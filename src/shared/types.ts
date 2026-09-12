@@ -100,6 +100,52 @@ export interface ScanProgress {
 
 export type SeriesFilter = 'all' | 'unread' | 'reading' | 'read' | 'recent'
 
+/** 虚拟书架（用户自建的分组，独立于物理书库） */
+export interface ShelfInfo {
+  id: number
+  name: string
+  sort: number
+}
+
+/** 自定义标签（关联表存储，独立于 ComicInfo 导入的 series.tags 列） */
+export interface TagInfo {
+  id: number
+  name: string
+}
+
+// ---------- 库体检（只读诊断） ----------
+
+export interface DiagnoseBrokenChapter {
+  id: number
+  title: string
+  seriesId: number
+  seriesTitle: string
+  /** 扫描列页失败的原因（chapters.scan_error） */
+  reason: string
+}
+
+export interface DiagnoseEmptyChapter {
+  id: number
+  title: string
+  seriesTitle: string
+}
+
+export interface DiagnoseDuplicateItem {
+  id: number
+  title: string
+  folderPath: string
+}
+
+/** 库体检报告：只读诊断结果，不做任何自动修复 */
+export interface DiagnoseReport {
+  brokenChapters: DiagnoseBrokenChapter[]
+  emptyChapters: DiagnoseEmptyChapter[]
+  /** 归一化标题相同的系列分组（组内 >1 个才算重复） */
+  duplicateSeries: DiagnoseDuplicateItem[][]
+  /** 没有对应章节行的页缩略图目录总字节数（只统计，不删除） */
+  orphanThumbBytes: number
+}
+
 /** 跨话书签（阅读器书签面板用） */
 export interface BookmarkInfo {
   chapter_id: number

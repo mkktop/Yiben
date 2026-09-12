@@ -177,4 +177,52 @@ describe('RemoteZip（HTTP Range 直读 zip）', () => {
     await expect(zip.readPage(9)).rejects.toThrow('页码越界')
     await s.close()
   })
+
+  /** 篡改中央目录里某条目记录的未压缩 size 字段（zip bomb 模拟：谎报解压后大小） */
+  function patchCdSize(buf: Buffer, name: string, size: number): Buffer {
+    const out = Buffer.from(buf)
+    // 从 EOCD 拿中央目录的真实起点（CD 前面还有本地文件头数据，不能从 0 扫）
+    let eocd = -1
+    for (let i = out.length - 22; i >= 0; i--) {
+      if (out.readUInt32LE(i) === 0x06054b50) {
+        eocd = i
+        break
+      }
+    }
+    let p = out.readUInt32LE(eocd + 16)
+    while (p + 46 <= out.length && out.readUInt32LE(p) === 0x02014b50) {
+      const nameLen = out.readUInt16LE(p + 28)
+      if (out.toString('utf8', p + 46, p + 46 + nameLen) === name) {
+        out.writeUInt32LE(size, p + 24)
+        return out
+      }
+      p += 46 + nameLen + out.readUInt16LE(p + 30) + out.readUInt16LE(p + 32)
+    }
+    throw new Error(`中央目录里找不到 ${name}`)
+  }
+
+  it('zip bomb 防线：中央目录谎报超大 size 直接拒绝', async () => {
+    const bomb = patchCdSize(deflateZip, '001.png', 0x10000000)
+    const s = await serve(bomb)
+    const zip = await RemoteZip.create(
+      bomb.length,
+      (a, b) => rangeFetch(s.url, a, b),
+      async () => {}
+    )
+    await expect(zip.readPage(0)).rejects.toThrow('条目过大')
+    await s.close()
+  })
+
+  it('zip bomb 防线：解压结果与声明的 size 不符时报长度不符（而不是返回错字节）', async () => {
+    // 声明 size 在上限内但与真实解压结果不一致 → 校验拦截
+    const lie = patchCdSize(deflateZip, '001.png', 999999)
+    const s = await serve(lie)
+    const zip = await RemoteZip.create(
+      lie.length,
+      (a, b) => rangeFetch(s.url, a, b),
+      async () => {}
+    )
+    await expect(zip.readPage(0)).rejects.toThrow('条目长度不符')
+    await s.close()
+  })
 })
