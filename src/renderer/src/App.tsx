@@ -3,6 +3,7 @@ import { HashRouter, Routes, Route, useNavigate } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell'
 import { ScanIndicator } from './components/ScanIndicator'
 import { CloudNoticeToast } from './components/CloudNoticeToast'
+import { ToastHost } from './components/ui/toast'
 import { HomePage } from './routes/HomePage'
 import { LibraryPage } from './routes/LibraryPage'
 import { SeriesPage } from './routes/SeriesPage'
@@ -105,6 +106,7 @@ export default function App() {
       </Routes>
       <ScanIndicator />
       <CloudNoticeToast />
+      <ToastHost />
     </HashRouter>
   )
 }

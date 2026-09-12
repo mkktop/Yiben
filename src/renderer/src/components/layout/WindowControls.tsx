@@ -3,16 +3,10 @@ import { Copy, Minus, Square, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 /**
- * 无边框窗口的右上角控制按钮（最小化 / 最大化·还原 / 关闭）。
- * app 配色用于主界面顶栏（跟随主题），overlay 用于阅读器深色渐变顶栏（白色图标）。
+ * 无边框窗口的右上角控制按钮（最小化 / 最大化·还原 / 关闭），
+ * 配色跟随主题，用于主界面与阅读器顶栏。
  */
-export function WindowControls({
-  variant = 'app',
-  className
-}: {
-  variant?: 'app' | 'overlay'
-  className?: string
-}): ReactNode {
+export function WindowControls({ className }: { className?: string }): ReactNode {
   const [maximized, setMaximized] = useState(false)
 
   useEffect(() => {
@@ -30,12 +24,8 @@ export function WindowControls({
     }
   }, [])
 
-  const btn = cn(
-    'grid h-full w-11 place-items-center transition-colors',
-    variant === 'app'
-      ? 'text-muted-foreground hover:bg-foreground/10 hover:text-foreground'
-      : 'text-white/85 hover:bg-white/15 hover:text-white'
-  )
+  const btn =
+    'grid h-full w-11 place-items-center text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
 
   return (
     <div
@@ -61,7 +51,7 @@ export function WindowControls({
       </button>
       <button
         title="关闭"
-        className={cn(btn, 'hover:bg-red-500 hover:text-white')}
+        className={cn(btn, 'hover:bg-destructive hover:text-white')}
         onClick={() => {
           window.yiben.appWindow.close().catch(() => {})
         }}

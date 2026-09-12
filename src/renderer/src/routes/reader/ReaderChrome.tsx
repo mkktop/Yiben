@@ -19,6 +19,7 @@ import { useReaderStore, spreadPages, atLastScreen, type ReaderMode } from '@/st
 import { pageThumbUrl, type BookmarkInfo } from '@shared/types'
 import { cn } from '@/lib/utils'
 import { WindowControls } from '@/components/layout/WindowControls'
+import { Button } from '@/components/ui/button'
 import { KeyboardHelp } from './KeyboardHelp'
 import type { ReaderHint } from './ReaderPage'
 
@@ -117,17 +118,16 @@ export function ReaderChrome({
 
   return (
     <>
-      {/* 顶栏 */}
+      {/* 顶栏：悬浮毛玻璃条，m-3 距边缘 */}
       <div
         className={cn(
-          'absolute inset-x-0 top-0 z-20 flex h-12 items-center gap-2 pl-4 transition-opacity duration-300',
-          'bg-gradient-to-b from-black/80 to-black/0 text-white [-webkit-app-region:drag]',
+          'absolute inset-x-3 top-3 z-20 flex h-12 items-center gap-1.5 overflow-hidden rounded-xl border border-border/50 bg-background/80 pl-3 text-foreground shadow-lg backdrop-blur-md transition-opacity duration-300 [-webkit-app-region:drag]',
           immersive ? 'pointer-events-none opacity-0' : 'opacity-100'
         )}
       >
         <button
           onClick={onBack}
-          className="grid size-8 place-items-center rounded-md [-webkit-app-region:no-drag] hover:bg-white/10"
+          className="grid size-8 place-items-center rounded-full text-foreground/80 transition-colors [-webkit-app-region:no-drag] hover:bg-accent hover:text-foreground"
           title="返回 (Esc)"
         >
           <ArrowLeft className="size-4" />
@@ -136,7 +136,7 @@ export function ReaderChrome({
         <button
           onClick={onPrevChapter}
           disabled={!neighbors?.prev}
-          className="grid size-8 place-items-center rounded-md hover:bg-white/10 disabled:opacity-25"
+          className="grid size-8 place-items-center rounded-full text-foreground/80 transition-colors hover:bg-accent hover:text-foreground disabled:opacity-25"
           title={neighbors?.prev ? `上一话：${neighbors.prev.title}` : '没有上一话'}
         >
           <ChevronLeft className="size-4" />
@@ -144,7 +144,7 @@ export function ReaderChrome({
         <button
           onClick={onNextChapter}
           disabled={!neighbors?.next}
-          className="grid size-8 place-items-center rounded-md hover:bg-white/10 disabled:opacity-25"
+          className="grid size-8 place-items-center rounded-full text-foreground/80 transition-colors hover:bg-accent hover:text-foreground disabled:opacity-25"
           title={neighbors?.next ? `下一话：${neighbors.next.title}` : '没有下一话'}
         >
           <ChevronRight className="size-4" />
@@ -152,8 +152,8 @@ export function ReaderChrome({
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">
             {seriesTitle}
-            <span className="mx-2 text-white/40">/</span>
-            <span className="text-white/70">{chapterTitle}</span>
+            <span className="mx-2 text-muted-foreground/40">/</span>
+            <span className="text-muted-foreground">{chapterTitle}</span>
           </p>
         </div>
         <PageJump
@@ -161,7 +161,7 @@ export function ReaderChrome({
           page={page}
           onJump={(page0) => onJump(chapterId, page0)}
         />
-        <div className="mx-1 h-5 w-px bg-white/20" />
+        <div className="mx-1 h-5 w-px bg-border/60" />
         <IconBtn
           title={`书签：当前页${isBookmarked ? '已加' : '未加'}（B）`}
           active={isBookmarked}
@@ -218,13 +218,13 @@ export function ReaderChrome({
         <IconBtn title={isFullscreen ? '退出全屏' : '全屏（F）'} onClick={toggleFullscreen}>
           {isFullscreen ? <Minimize /> : <Maximize />}
         </IconBtn>
-        <WindowControls variant="overlay" />
+        <WindowControls />
       </div>
 
-      {/* 模式切换（左下悬浮） */}
+      {/* 模式切换（左下悬浮毛玻璃） */}
       <div
         className={cn(
-          'absolute bottom-4 left-4 z-20 flex gap-1 rounded-lg bg-black/60 p-1 backdrop-blur transition-opacity duration-300',
+          'absolute bottom-3 left-3 z-20 flex gap-1 rounded-xl border border-border/50 bg-background/80 p-1 shadow-lg backdrop-blur-md transition-opacity duration-300',
           immersive ? 'pointer-events-none opacity-0' : 'opacity-100'
         )}
       >
@@ -234,8 +234,10 @@ export function ReaderChrome({
             onClick={() => onModeChange(m.key)}
             title={`${m.label}模式（M 循环切换）`}
             className={cn(
-              'flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs',
-              mode === m.key ? 'bg-white/90 text-black' : 'text-white/80 hover:bg-white/10'
+              'flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs transition-colors',
+              mode === m.key
+                ? 'bg-primary font-medium text-primary-foreground shadow-sm'
+                : 'text-muted-foreground hover:bg-accent hover:text-foreground'
             )}
           >
             <m.icon className="size-3.5" />
@@ -244,20 +246,26 @@ export function ReaderChrome({
         ))}
       </div>
 
-      {/* 末页提示卡：直接进下一话（键盘/点击继续翻页也会自动进入）；
+      {/* 末页提示卡：居中卡片，直接进下一话（键盘/点击继续翻页也会自动进入）；
           条漫跨话拼接时下一话已在同一条带里，卡就不必再出现 */}
       {atEnd && neighbors?.next && !hideEndCard && (
-        <button
-          onClick={onNextChapter}
-          className={cn(
-            'absolute bottom-8 left-1/2 z-20 flex -translate-x-1/2 items-center gap-3 rounded-xl px-5 py-3 text-sm shadow-2xl transition-all',
-            'border border-white/10 bg-black/70 text-white backdrop-blur hover:bg-black/85'
-          )}
-        >
-          <span className="text-white/60">本话完</span>
-          <span className="max-w-56 truncate">下一话：{neighbors.next.title}</span>
-          <ChevronRight className="size-4" />
-        </button>
+        <div className="absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2">
+          <div className="animate-scale-in w-80 max-w-[calc(100vw-1.5rem)] rounded-2xl border border-border/50 bg-background/80 p-5 text-center text-foreground shadow-lg backdrop-blur-md">
+            <p className="text-[11px] font-medium tracking-[0.25em] text-muted-foreground">
+              本话完
+            </p>
+            <p className="mt-1.5 truncate text-sm font-semibold">{neighbors.next.title}</p>
+            <div className="mt-4 flex items-center gap-2">
+              <Button className="flex-1" onClick={onNextChapter}>
+                进入下一话
+                <ChevronRight />
+              </Button>
+              <Button variant="ghost" className="flex-1" onClick={onBack}>
+                返回书架
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* 底部进度条 */}
@@ -273,12 +281,11 @@ export function ReaderChrome({
         />
       </div>
 
-      {/* 缩略图条 */}
+      {/* 缩略图条（底部悬浮毛玻璃） */}
       {showThumbs && canThumbnail && (
         <div
           className={cn(
-            'absolute inset-x-0 bottom-0 z-20 flex h-28 items-center gap-2 overflow-x-auto px-4 pb-3',
-            'bg-gradient-to-t from-black/90 to-black/30 backdrop-blur transition-opacity',
+            'absolute inset-x-3 bottom-3 z-20 flex h-28 items-center gap-2 overflow-x-auto rounded-xl border border-border/50 bg-background/80 px-3 shadow-lg backdrop-blur-md transition-opacity',
             immersive ? 'pointer-events-none opacity-0' : 'opacity-100'
           )}
         >
@@ -287,13 +294,13 @@ export function ReaderChrome({
               key={p}
               onClick={() => setPage(p)}
               className={cn(
-                'relative h-20 shrink-0 overflow-hidden rounded border-2 transition-all',
+                'relative h-20 shrink-0 overflow-hidden rounded-lg border-2 transition-all',
                 p === page ? 'border-primary' : 'border-transparent opacity-60 hover:opacity-100'
               )}
               title={`第 ${p + 1} 页`}
             >
               <img src={pageThumbUrl(chapterId, p)} alt="" className="h-full w-auto" loading="lazy" />
-              <span className="absolute bottom-0 right-0 bg-black/60 px-1 text-[10px] text-white">
+              <span className="absolute bottom-0 right-0 bg-black/60 px-1 text-[10px] tabular-nums text-white">
                 {p + 1}
               </span>
               {bookmarks.some((b) => b.chapter_id === chapterId && b.page === p) && (
@@ -336,7 +343,7 @@ export function ReaderChrome({
           onClick={onHintClose}
         >
           {hint.kind === 'direction' ? (
-            <div className="hint-pop pointer-events-auto flex flex-col items-center gap-2 rounded-xl border border-white/15 bg-black/80 px-8 py-5 text-white shadow-2xl backdrop-blur">
+            <div className="hint-pop pointer-events-auto flex flex-col items-center gap-2 rounded-xl border border-border/50 bg-background/80 px-8 py-5 text-foreground shadow-lg backdrop-blur-md">
               <div className={cn('flex items-center gap-1 text-primary', hint.rtl && 'scale-x-[-1]')}>
                 <span className="text-2xl leading-none">→</span>
                 <span className="text-2xl leading-none">📖</span>
@@ -344,10 +351,10 @@ export function ReaderChrome({
               <p className="text-sm font-medium">
                 翻页方向：{hint.rtl ? '从右往左（日漫）' : '从左往右（西漫）'}
               </p>
-              <p className="text-xs text-white/50">点击区域与翻页键都跟随这个方向，D 键可切换</p>
+              <p className="text-xs text-muted-foreground">点击区域与翻页键都跟随这个方向，D 键可切换</p>
             </div>
           ) : (
-            <div className="hint-pop pointer-events-auto rounded-full border border-white/15 bg-black/80 px-5 py-2.5 text-sm text-white shadow-2xl backdrop-blur">
+            <div className="hint-pop pointer-events-auto rounded-xl border border-border/50 bg-background/80 px-5 py-2.5 text-sm text-foreground shadow-lg backdrop-blur-md">
               {hint.text}
             </div>
           )}
@@ -408,7 +415,7 @@ function PageJump({
   if (!editing) {
     return (
       <button
-        className="shrink-0 rounded px-1.5 py-1 text-xs text-white/70 tabular-nums [-webkit-app-region:no-drag] hover:bg-white/10 hover:text-white"
+        className="shrink-0 rounded-full px-1.5 py-1 text-xs tabular-nums text-muted-foreground transition-colors [-webkit-app-region:no-drag] hover:bg-accent hover:text-foreground"
         title="点击输入页码跳转"
         onClick={() => setEditing(true)}
       >
@@ -435,19 +442,19 @@ function PageJump({
         if (e.key === 'Escape') setEditing(false)
         e.stopPropagation()
       }}
-      className="w-16 shrink-0 rounded border border-white/30 bg-black/60 px-1.5 py-1 text-center text-xs text-white tabular-nums outline-none [-webkit-app-region:no-drag]"
+      className="w-16 shrink-0 rounded-md border border-border/60 bg-muted/60 px-1.5 py-1 text-center text-xs tabular-nums text-foreground outline-none [-webkit-app-region:no-drag]"
     />
   )
 }
 
 function Panel({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   return (
-    <div className="absolute right-4 top-14 z-30 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border bg-background shadow-2xl">
+    <div className="animate-scale-in absolute right-3 top-[4.5rem] z-30 w-80 max-w-[calc(100vw-1.5rem)] origin-top-right overflow-hidden rounded-2xl border border-border/50 bg-background/80 shadow-lg backdrop-blur-md">
       <div className="flex items-center justify-between border-b border-border/60 px-4 py-2.5">
         <h3 className="text-sm font-semibold">{title}</h3>
         <button
           onClick={onClose}
-          className="grid size-6 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="grid size-7 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           <X className="size-4" />
         </button>
@@ -473,8 +480,8 @@ function IconBtn({
       title={title}
       onClick={onClick}
       className={cn(
-        'grid size-8 place-items-center rounded-md text-white/85 [-webkit-app-region:no-drag] hover:bg-white/10 [&_svg]:size-4',
-        active && 'bg-white/20 text-white'
+        'grid size-8 shrink-0 place-items-center rounded-full text-foreground/80 transition-colors [-webkit-app-region:no-drag] hover:bg-accent hover:text-foreground [&_svg]:size-4',
+        active ? 'bg-primary/15 text-primary hover:bg-primary/25 hover:text-primary' : ''
       )}
     >
       {children}

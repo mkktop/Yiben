@@ -1,18 +1,22 @@
 import { useEffect } from 'react'
-import { TriangleAlert, X } from 'lucide-react'
 import { useScanStore, useDataStore } from '@/stores/data'
-import { cn } from '@/lib/utils'
+import { useToastStore } from '@/stores/toast'
 
 /** 扫描错误/告警提示的停留时间 */
 const NOTICE_MS = 8000
 
+/** 扫描提示在全局 Toast 队列里的固定槽位 */
+const SLOT = 'scan-notice'
+
 /**
- * 右下角扫描浮标：订阅主进程 scan:progress / scan:notice。
- * 失败时主进程会补发 done，所以浮标不会再永久卡住；原因通过 notice 卡片展示。
+ * 扫描浮标：订阅主进程 scan:progress / scan:notice。
+ * 失败时主进程会补发 done，所以浮标不会再永久卡住；原因推入全局 Toast（与其他来源堆叠展示）。
  */
 export function ScanIndicator() {
   const { active, current, total, title, notice, setProgress, setNotice } = useScanStore()
   const bump = useDataStore((s) => s.bump)
+  const push = useToastStore((s) => s.push)
+  const close = useToastStore((s) => s.close)
 
   useEffect(() => {
     const offProgress = window.yiben.events.onScanProgress((p) => {
@@ -30,48 +34,27 @@ export function ScanIndicator() {
   }, [setProgress, setNotice, bump])
 
   useEffect(() => {
-    if (!notice) return
+    if (!notice) {
+      close(SLOT)
+      return
+    }
+    const isError = notice.level === 'error'
+    push({
+      id: SLOT,
+      kind: isError ? 'error' : 'warning',
+      title: isError ? '扫描失败' : '扫描提示',
+      children: <p className="break-words">{notice.message}</p>
+    })
     const timer = setTimeout(() => setNotice(null), NOTICE_MS)
     return () => clearTimeout(timer)
-  }, [notice, setNotice])
+  }, [notice, push, close, setNotice])
 
-  if (notice) {
-    const isError = notice.level === 'error'
-    return (
-      <div
-        className={cn(
-          'fixed right-6 bottom-6 z-50 w-80 rounded-xl border p-4 shadow-xl backdrop-blur',
-          isError
-            ? 'border-destructive/50 bg-destructive/10'
-            : 'border-amber-500/50 bg-amber-500/10'
-        )}
-      >
-        <div className="flex items-start gap-2">
-          <TriangleAlert
-            className={cn('mt-0.5 size-4 shrink-0', isError ? 'text-destructive' : 'text-amber-500')}
-          />
-          <p className="min-w-0 flex-1 text-xs font-medium">
-            {isError ? '扫描失败' : '扫描提示'}
-          </p>
-          <button
-            onClick={() => setNotice(null)}
-            className="-mt-1 -mr-1 grid size-5 shrink-0 place-items-center rounded text-muted-foreground hover:text-foreground"
-            title="关闭"
-          >
-            <X className="size-3.5" />
-          </button>
-        </div>
-        <p className="mt-1.5 break-words pl-6 text-xs text-muted-foreground">{notice.message}</p>
-      </div>
-    )
-  }
-
-  if (!active) return null
+  if (notice || !active) return null
 
   const pct = total > 0 ? Math.round((current / total) * 100) : 0
 
   return (
-    <div className="fixed right-6 bottom-6 z-50 w-72 rounded-xl border bg-card/95 p-4 shadow-xl backdrop-blur">
+    <div className="fixed right-6 bottom-6 z-50 w-72 rounded-xl border bg-card/95 p-4 shadow-lg backdrop-blur">
       <div className="mb-2 flex items-center justify-between text-xs">
         <span className="font-medium">正在扫描书库</span>
         <span className="text-muted-foreground">

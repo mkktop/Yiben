@@ -22,6 +22,8 @@
   --accent-foreground: oklch(0.3 0.01 60);
   --destructive: oklch(0.577 0.245 27.3);
   --destructive-foreground: oklch(0.985 0.005 80);
+  --warning: oklch(0.68 0.15 65);
+  --warning-foreground: oklch(0.985 0.005 80);
   --border: oklch(0.9 0.005 80);
   --input: oklch(0.9 0.005 80);
   --ring: oklch(0.65 0.15 32);
@@ -33,6 +35,20 @@
   --sidebar-accent-foreground: oklch(0.3 0.01 60);
   --sidebar-border: oklch(0.905 0.005 80);
   --sidebar-ring: oklch(0.65 0.15 32);
+
+  /* 页面顶部氛围光 · 浅色偏暖米金 */
+  --ambient: oklch(0.92 0.045 88);
+  /* 无封面占位底色 · 比 --muted 略暖 */
+  --cover-placeholder: oklch(0.94 0.015 80);
+
+  /* 阴影 · 浅色轻而利落（暖色阴影） */
+  --elevation-xs: 0 1px 2px 0 oklch(0.25 0.01 60 / 0.06);
+  --elevation-sm:
+    0 1px 3px 0 oklch(0.25 0.01 60 / 0.07), 0 1px 2px -1px oklch(0.25 0.01 60 / 0.05);
+  --elevation-md:
+    0 4px 8px -2px oklch(0.25 0.01 60 / 0.08), 0 2px 4px -2px oklch(0.25 0.01 60 / 0.05);
+  --elevation-lg:
+    0 12px 24px -6px oklch(0.25 0.01 60 / 0.1), 0 4px 8px -4px oklch(0.25 0.01 60 / 0.06);
 }
 
 .dark {
@@ -48,11 +64,13 @@
   --secondary: oklch(0.25 0.006 70);
   --secondary-foreground: oklch(0.92 0.005 80);
   --muted: oklch(0.25 0.006 70);
-  --muted-foreground: oklch(0.68 0.008 75);
+  --muted-foreground: oklch(0.72 0.008 75);
   --accent: oklch(0.27 0.012 60);
   --accent-foreground: oklch(0.92 0.005 80);
   --destructive: oklch(0.65 0.2 25);
   --destructive-foreground: oklch(0.98 0.01 80);
+  --warning: oklch(0.79 0.14 78);
+  --warning-foreground: oklch(0.28 0.06 70);
   --border: oklch(0.27 0.006 70);
   --input: oklch(0.27 0.006 70);
   --ring: oklch(0.6 0.16 33);
@@ -64,6 +82,113 @@
   --sidebar-accent-foreground: oklch(0.92 0.005 80);
   --sidebar-border: oklch(0.25 0.006 70);
   --sidebar-ring: oklch(0.6 0.16 33);
+
+  /* 页面顶部氛围光 · 深色偏琥珀 */
+  --ambient: oklch(0.34 0.06 70);
+  /* 无封面占位底色 · 比 --muted 略暖 */
+  --cover-placeholder: oklch(0.27 0.012 60);
+
+  /* 阴影 · 深色更重更柔 */
+  --elevation-xs: 0 1px 3px 0 oklch(0 0 0 / 0.35);
+  --elevation-sm: 0 2px 5px -1px oklch(0 0 0 / 0.4), 0 1px 2px -1px oklch(0 0 0 / 0.3);
+  --elevation-md: 0 6px 14px -3px oklch(0 0 0 / 0.45), 0 3px 6px -3px oklch(0 0 0 / 0.35);
+  --elevation-lg: 0 16px 32px -8px oklch(0 0 0 / 0.55), 0 6px 12px -6px oklch(0 0 0 / 0.4);
+}
+
+/* ============ 主题风格：现代漫画（data-theme="comic"） ============ */
+
+/* 漫画 · 浅色「杂志白昼」：亮纸白 + 油墨蓝黑 + 钴蓝主色 + 明黄氛围 */
+:root[data-theme='comic'] {
+  --radius: 0.45rem;
+
+  --background: oklch(0.985 0.005 95);
+  --foreground: oklch(0.22 0.03 265);
+  --card: oklch(0.995 0.003 95);
+  --card-foreground: oklch(0.22 0.03 265);
+  --popover: oklch(0.995 0.003 95);
+  --popover-foreground: oklch(0.22 0.03 265);
+  --primary: oklch(0.5 0.19 262);
+  --primary-foreground: oklch(0.98 0.01 95);
+  --secondary: oklch(0.94 0.015 260);
+  --secondary-foreground: oklch(0.28 0.03 265);
+  --muted: oklch(0.94 0.015 260);
+  --muted-foreground: oklch(0.5 0.03 265);
+  --accent: oklch(0.92 0.09 95);
+  --accent-foreground: oklch(0.3 0.04 95);
+  --destructive: oklch(0.56 0.22 27);
+  --destructive-foreground: oklch(0.98 0.01 95);
+  --warning: oklch(0.7 0.15 75);
+  --warning-foreground: oklch(0.98 0.01 95);
+  --border: oklch(0.85 0.02 260);
+  --input: oklch(0.85 0.02 260);
+  --ring: oklch(0.6 0.16 262);
+  --sidebar: oklch(0.965 0.008 260);
+  --sidebar-foreground: oklch(0.22 0.03 265);
+  --sidebar-primary: oklch(0.5 0.19 262);
+  --sidebar-primary-foreground: oklch(0.98 0.01 95);
+  --sidebar-accent: oklch(0.93 0.02 260);
+  --sidebar-accent-foreground: oklch(0.28 0.03 265);
+  --sidebar-border: oklch(0.87 0.02 260);
+  --sidebar-ring: oklch(0.6 0.16 262);
+
+  --ambient: oklch(0.88 0.13 95);
+  --cover-placeholder: oklch(0.94 0.03 95);
+
+  /* 漫画招牌：实心偏移墨影（印刷套准感） */
+  --elevation-xs: 1px 1px 0 0 oklch(0.22 0.03 265 / 0.45);
+  --elevation-sm: 2px 2px 0 0 oklch(0.22 0.03 265 / 0.4);
+  --elevation-md: 3px 3px 0 0 oklch(0.22 0.03 265 / 0.35);
+  --elevation-lg: 6px 6px 0 0 oklch(0.22 0.03 265 / 0.3);
+}
+
+/* 漫画 · 深色「霓虹漫展」：墨蓝黑 + 信号黄主色 + 霓虹青氛围 */
+:root[data-theme='comic'].dark {
+  --background: oklch(0.17 0.025 265);
+  --foreground: oklch(0.95 0.012 95);
+  --card: oklch(0.21 0.025 265);
+  --card-foreground: oklch(0.95 0.012 95);
+  --popover: oklch(0.22 0.025 265);
+  --popover-foreground: oklch(0.95 0.012 95);
+  --primary: oklch(0.86 0.15 95);
+  --primary-foreground: oklch(0.24 0.04 265);
+  --secondary: oklch(0.26 0.02 265);
+  --secondary-foreground: oklch(0.95 0.012 95);
+  --muted: oklch(0.26 0.02 265);
+  --muted-foreground: oklch(0.74 0.02 265);
+  --accent: oklch(0.29 0.03 250);
+  --accent-foreground: oklch(0.95 0.012 95);
+  --destructive: oklch(0.66 0.19 25);
+  --destructive-foreground: oklch(0.98 0.01 95);
+  --warning: oklch(0.8 0.13 80);
+  --warning-foreground: oklch(0.28 0.05 265);
+  --border: oklch(0.32 0.025 265);
+  --input: oklch(0.32 0.025 265);
+  --ring: oklch(0.86 0.15 95);
+  --sidebar: oklch(0.19 0.025 265);
+  --sidebar-foreground: oklch(0.95 0.012 95);
+  --sidebar-primary: oklch(0.86 0.15 95);
+  --sidebar-primary-foreground: oklch(0.24 0.04 265);
+  --sidebar-accent: oklch(0.26 0.025 265);
+  --sidebar-accent-foreground: oklch(0.95 0.012 95);
+  --sidebar-border: oklch(0.28 0.025 265);
+  --sidebar-ring: oklch(0.86 0.15 95);
+
+  --ambient: oklch(0.5 0.1 220);
+  --cover-placeholder: oklch(0.27 0.03 265);
+
+  --elevation-xs: 1px 1px 0 0 oklch(0 0 0 / 0.6);
+  --elevation-sm: 2px 2px 0 0 oklch(0 0 0 / 0.55);
+  --elevation-md: 3px 3px 0 0 oklch(0 0 0 / 0.5);
+  --elevation-lg: 6px 6px 0 0 oklch(0 0 0 / 0.45);
+}
+
+/* 漫画主题专属：页面铺一层极淡的印刷网点（halftone）纹理 */
+[data-theme='comic'] body {
+  background-image: radial-gradient(
+    color-mix(in oklch, var(--foreground) 5%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: 14px 14px;
 }
 
 @theme inline {
@@ -83,6 +208,8 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -94,6 +221,12 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-ambient: var(--ambient);
+  --color-cover-placeholder: var(--cover-placeholder);
+  --shadow-xs: var(--elevation-xs);
+  --shadow-sm: var(--elevation-sm);
+  --shadow-md: var(--elevation-md);
+  --shadow-lg: var(--elevation-lg);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -126,6 +259,30 @@
   scrollbar-color: color-mix(in oklch, var(--foreground) 18%, transparent) transparent;
 }
 
+/* Chromium 内核细滚动条（Firefox 走上方标准属性） */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: color-mix(in oklch, var(--foreground) 18%, transparent);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklch, var(--foreground) 30%, transparent);
+}
+
+/* 横向滚动列表（如首页继续阅读）：隐藏滚动条，靠拖拽/滚轮横移 */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* 阅读器提示浮层（方向提示 / 操作反馈）淡入上浮 */
 @keyframes hint-pop {
   from {
@@ -139,4 +296,87 @@
 }
 .hint-pop {
   animation: hint-pop 0.25s ease-out;
+}
+
+/* 骨架屏：muted 底 + 扫光渐变（动画在下方动效体系中启用） */
+.skeleton {
+  background-color: var(--muted);
+  background-image: linear-gradient(
+    100deg,
+    transparent 35%,
+    color-mix(in oklch, var(--foreground) 7%, transparent) 50%,
+    transparent 65%
+  );
+  background-size: 200% 100%;
+}
+
+/* 动效体系：仅在用户未偏好减少动效时启用 */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes rise-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes scale-in {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  @keyframes shimmer {
+    from {
+      background-position: 200% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
+  }
+  /* Toast 右上角滑入 */
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translateX(24px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  .animate-fade-in {
+    animation: fade-in 0.2s ease-out both;
+  }
+  .animate-rise-in {
+    animation: rise-in 0.3s ease-out both;
+  }
+  .animate-scale-in {
+    animation: scale-in 0.2s ease-out both;
+  }
+  .animate-shimmer {
+    animation: shimmer 1.8s linear infinite;
+  }
+  .animate-toast-in {
+    animation: toast-in 0.25s ease-out both;
+  }
+
+  .skeleton {
+    animation: shimmer 1.8s linear infinite;
+  }
 }

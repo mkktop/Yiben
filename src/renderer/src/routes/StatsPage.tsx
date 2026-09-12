@@ -3,6 +3,7 @@ import { Flame, Layers, CalendarCheck, TrendingUp } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAsync } from '@/hooks/useAsync'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Card, CardBody, CardHeader } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 
 /** 主进程 stats:overview 的返回（与 preload 声明一致） */
@@ -19,13 +20,13 @@ function dayKey(d: Date): string {
   return d.toLocaleDateString('sv')
 }
 
-/** 5 档色阶：0 页空底，页数越多 primary 越实 */
+/** 5 档色阶：0 页空底，页数越多 primary 越实（最高档用主色渐变） */
 function heatLevel(pages: number): string {
   if (pages <= 0) return 'bg-muted'
   if (pages < 10) return 'bg-primary/25'
   if (pages < 30) return 'bg-primary/45'
   if (pages < 60) return 'bg-primary/70'
-  return 'bg-primary'
+  return 'bg-gradient-to-br from-primary to-primary/85'
 }
 
 interface StatCardProps {
@@ -37,14 +38,18 @@ interface StatCardProps {
 
 function StatCard({ label, value, hint, icon: Icon }: StatCardProps) {
   return (
-    <div className="rounded-xl border p-5">
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Icon className="size-3.5" />
-        {label}
+    <Card className="p-5">
+      <div className="flex items-start gap-3">
+        <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10">
+          <Icon className="size-4 text-primary" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-xs text-muted-foreground">{label}</p>
+          <p className="mt-0.5 text-2xl font-semibold tabular-nums">{value}</p>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">{hint}</p>
+        </div>
       </div>
-      <p className="mt-1.5 font-serif text-2xl font-semibold">{value}</p>
-      <p className="mt-0.5 truncate text-xs text-muted-foreground">{hint}</p>
-    </div>
+    </Card>
   )
 }
 
@@ -72,17 +77,17 @@ export function StatsPage() {
 
   if (error) {
     return (
-      <div className="mx-auto max-w-4xl p-8">
+      <div className="mx-auto max-w-[1200px] space-y-6 p-8">
         <StatsHeader />
-        <div className="rounded-xl border p-5 text-sm text-muted-foreground">
-          统计加载失败：{error}
-        </div>
+        <Card className="p-5">
+          <p className="text-sm text-muted-foreground">统计加载失败：{error}</p>
+        </Card>
       </div>
     )
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-8">
+    <div className="mx-auto max-w-[1200px] space-y-6 p-8">
       <StatsHeader />
 
       {!data ? (
@@ -124,35 +129,45 @@ export function StatsPage() {
             />
           </div>
 
-          <section className="rounded-xl border p-5">
-            <h2 className="text-sm font-medium">阅读热力图</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">近一年每天的阅读页数</p>
-            <div className="mt-4 overflow-x-auto pb-1">
-              {/* auto-cols-fr：53 个隐式列平分容器宽度，窄窗口时才出横向滚动 */}
-              <div className="grid w-full min-w-[640px] auto-cols-fr grid-flow-col grid-rows-7 gap-1">
-                {cells.map(({ key, pages, future }) => (
-                  <div
-                    key={key}
-                    title={future ? undefined : `${key} · ${pages} 页`}
-                    className={cn(
-                      'aspect-square w-full rounded-[3px]',
-                      future ? 'bg-muted/30' : heatLevel(pages)
-                    )}
-                  />
-                ))}
+          <Card>
+            <CardHeader
+              title={
+                <>
+                  阅读热力图
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    近一年每天的阅读页数
+                  </span>
+                </>
+              }
+            />
+            <CardBody>
+              <div className="overflow-x-auto pb-1">
+                {/* auto-cols-fr：53 个隐式列平分容器宽度，窄窗口时才出横向滚动 */}
+                <div className="grid w-full min-w-[640px] auto-cols-fr grid-flow-col grid-rows-7 gap-1">
+                  {cells.map(({ key, pages, future }) => (
+                    <div
+                      key={key}
+                      title={future ? undefined : `${key} · ${pages} 页`}
+                      className={cn(
+                        'aspect-square w-full rounded-[4px]',
+                        future ? 'bg-muted/30' : heatLevel(pages)
+                      )}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
-            {/* 色阶图例 */}
-            <div className="mt-3 flex items-center justify-end gap-1 text-xs text-muted-foreground">
-              少
-              {['bg-muted', 'bg-primary/25', 'bg-primary/45', 'bg-primary/70', 'bg-primary'].map(
-                (c) => (
-                  <span key={c} className={cn('size-3 rounded-[3px]', c)} />
-                )
-              )}
-              多
-            </div>
-          </section>
+              {/* 色阶图例 */}
+              <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
+                少
+                {['bg-muted', 'bg-primary/25', 'bg-primary/45', 'bg-primary/70', 'bg-gradient-to-br from-primary to-primary/85'].map(
+                  (c) => (
+                    <span key={c} className={cn('size-3 rounded-[4px]', c)} />
+                  )
+                )}
+                多
+              </div>
+            </CardBody>
+          </Card>
         </>
       )}
     </div>

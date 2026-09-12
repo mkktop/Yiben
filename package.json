@@ -1,7 +1,7 @@
 {
   "name": "yiben",
   "productName": "一本 Yiben",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "精美的本地 + 天翼云盘漫画阅读器",
   "main": "./out/main/index.js",
   "author": "yiben",
@@ -41,7 +41,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "fileAssociations": [
@@ -117,7 +119,9 @@
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false,
       "artifactName": "Yiben_${version}_setup.exe",
-      "installerLanguages": ["zh_CN"],
+      "installerLanguages": [
+        "zh_CN"
+      ],
       "language": "2052"
     }
   },

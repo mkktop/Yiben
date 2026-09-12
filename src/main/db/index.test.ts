@@ -16,6 +16,7 @@ import {
   getSeries,
   listSeries,
   openDb,
+  recentlyAdded,
   rebuildFts,
   saveProgress,
   setSeriesHidden,
@@ -168,5 +169,38 @@ describe('listSeries（元数据编辑后不被扫描覆盖的前提字段存在
     updateSeriesMeta(id, { title: '可见性改' })
     rebuildFts() // 生产里由 series:updateMeta IPC 在改元数据后调用
     expect(listSeries({ query: '可见性改' }).map((s) => s.id)).toContain(id)
+  })
+})
+
+describe('系列级进度聚合（read_chapters / total_chapters）', () => {
+  it('listSeries 按已完成章节数聚合，读完一章涨一格', () => {
+    const id = seedSeries('聚合A', ['x1', 'x2', 'x3'])
+    const [x1, x2] = chapterIds(id)
+    const row = (): ReturnType<typeof listSeries>[number] | undefined =>
+      listSeries().find((s) => s.id === id)
+
+    expect(row()?.total_chapters).toBe(3)
+    expect(row()?.read_chapters).toBe(0)
+
+    saveProgress(x1, 9, true)
+    expect(row()?.read_chapters).toBe(1)
+    saveProgress(x2, 9, false) // 在读未完不计入
+    expect(row()?.read_chapters).toBe(1)
+  })
+
+  it('recentlyAdded 返回同样的聚合列', () => {
+    const id = seedSeries('聚合B', ['y1', 'y2'])
+    const [y1] = chapterIds(id)
+    saveProgress(y1, 9, true)
+    const row = recentlyAdded(50).find((s) => s.id === id)
+    expect(row).toMatchObject({ total_chapters: 2, read_chapters: 1 })
+  })
+
+  it('无章节的系列聚合为 0/0（不点亮徽章）', () => {
+    const id = seedSeries('聚合C', [])
+    expect(listSeries().find((s) => s.id === id)).toMatchObject({
+      total_chapters: 0,
+      read_chapters: 0
+    })
   })
 })

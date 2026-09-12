@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { BookOpen } from 'lucide-react'
 import { coverUrl } from '@shared/types'
 import { cn } from '@/lib/utils'
 
@@ -52,8 +51,17 @@ export function CoverImage({
     return (
       <>
         {fallback ?? (
-          <div className={cn('grid place-items-center', className)}>
-            <BookOpen className="size-6 text-muted-foreground/50" />
+          <div
+            className={cn(
+              'relative grid place-items-center bg-gradient-to-br from-cover-placeholder to-cover-placeholder/70',
+              className
+            )}
+          >
+            {/* 左侧书脊：深色竖条，浅色用暖深色、深色用纯黑压暗 */}
+            <span className="absolute inset-y-0 left-0 w-1.5 bg-foreground/15 dark:bg-black/50" />
+            <span className="font-serif text-5xl font-semibold text-foreground/60">
+              {title.trim().charAt(0) || '书'}
+            </span>
           </div>
         )}
       </>

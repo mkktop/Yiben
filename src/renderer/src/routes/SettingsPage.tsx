@@ -17,6 +17,7 @@ import { useDataStore } from '@/stores/data'
 import { useUpdateStore } from '@/stores/update'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Card, CardBody, CardHeader } from '@/components/ui/card'
 import { cn, errorMessage } from '@/lib/utils'
 import type { DiagnoseReport, ReaderPrefs } from '@shared/types'
 
@@ -32,7 +33,7 @@ interface SeriesCache {
   bytes: number
 }
 
-/** 开关行：标题 + 描述 + 右侧开关 */
+/** 开关行：标题 + 描述 + 右侧开关；整行 hover 反馈，开关本体带色彩过渡 */
 function ToggleRow({
   title,
   desc,
@@ -45,7 +46,7 @@ function ToggleRow({
   onChange: (v: boolean) => void
 }) {
   return (
-    <div className="flex items-center justify-between gap-4">
+    <div className="-mx-3 flex items-center justify-between gap-4 rounded-lg px-3 py-1.5 transition-colors hover:bg-accent/60">
       <div>
         <p className="text-sm font-medium">{title}</p>
         <p className="mt-0.5 text-xs text-muted-foreground">{desc}</p>
@@ -56,7 +57,7 @@ function ToggleRow({
         onClick={() => onChange(!checked)}
         className={cn(
           'relative h-6 w-11 shrink-0 rounded-full transition-colors',
-          checked ? 'bg-primary' : 'bg-muted'
+          checked ? 'bg-primary hover:bg-primary/85' : 'bg-muted hover:bg-foreground/15'
         )}
       >
         <span
@@ -92,9 +93,9 @@ function ReaderDefaultsSection() {
   const rtl = defaults.rtl ?? true
 
   return (
-    <section>
-      <h2 className="mb-4 text-sm font-medium text-muted-foreground">阅读</h2>
-      <div className="space-y-5 rounded-xl border p-5">
+    <Card>
+      <CardHeader title="阅读" />
+      <CardBody>
         <ChoiceRow
           label="翻页模式"
           options={[
@@ -125,8 +126,8 @@ function ReaderDefaultsSection() {
           只影响还没单独设置过的漫画；在阅读器里改过的设置按系列记忆并优先生效。
           {saved ? ' 已保存 ✓' : ''}
         </p>
-      </div>
-    </section>
+      </CardBody>
+    </Card>
   )
 }
 
@@ -175,9 +176,9 @@ function GeneralSection() {
   }, [])
 
   return (
-    <section>
-      <h2 className="mb-4 text-sm font-medium text-muted-foreground">通用</h2>
-      <div className="space-y-4 rounded-xl border p-5">
+    <Card>
+      <CardHeader title="通用" />
+      <CardBody>
         <ToggleRow
           title="书库文件变动自动重扫"
           desc="往本地书库文件夹里加/删漫画后自动增量更新书架（约 5 秒延迟）"
@@ -196,8 +197,8 @@ function GeneralSection() {
             void window.yiben.config.set('resumeOnLaunch', v).catch(() => {})
           }}
         />
-      </div>
-    </section>
+      </CardBody>
+    </Card>
   )
 }
 
@@ -238,9 +239,9 @@ function DataSection() {
   }
 
   return (
-    <section>
-      <h2 className="mb-4 text-sm font-medium text-muted-foreground">数据</h2>
-      <div className="rounded-xl border p-5">
+    <Card>
+      <CardHeader title="数据" />
+      <CardBody>
         <div className="flex items-center justify-between gap-4">
           <div>
             <p className="text-sm font-medium">备份阅读进度</p>
@@ -259,9 +260,9 @@ function DataSection() {
             </Button>
           </div>
         </div>
-        {message && <p className="mt-3 text-xs text-muted-foreground">{message}</p>}
-      </div>
-    </section>
+        {message && <p className="text-xs text-muted-foreground">{message}</p>}
+      </CardBody>
+    </Card>
   )
 }
 
@@ -318,9 +319,9 @@ function CloudCacheSection() {
   }
 
   return (
-    <section>
-      <h2 className="mb-4 text-sm font-medium text-muted-foreground">云端缓存</h2>
-      <div className="space-y-5 rounded-xl border p-5">
+    <Card>
+      <CardHeader title="云端缓存" />
+      <CardBody>
         {/* 概览 + 上限 */}
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -419,8 +420,8 @@ function CloudCacheSection() {
             </div>
           )}
         </div>
-      </div>
-    </section>
+      </CardBody>
+    </Card>
   )
 }
 
@@ -447,9 +448,9 @@ function UpdateSection() {
   })()
 
   return (
-    <section>
-      <h2 className="mb-4 text-sm font-medium text-muted-foreground">关于与更新</h2>
-      <div className="space-y-5 rounded-xl border p-5">
+    <Card>
+      <CardHeader title="关于与更新" />
+      <CardBody>
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="grid size-10 place-items-center rounded-lg bg-primary/10">
@@ -534,8 +535,8 @@ function UpdateSection() {
             void window.yiben.config.set('autoCheckUpdate', v).catch(() => {})
           }}
         />
-      </div>
-    </section>
+      </CardBody>
+    </Card>
   )
 }
 
@@ -553,7 +554,7 @@ function DiagnoseList({
     <details className="group rounded-lg border border-border/60">
       <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2.5 text-xs transition-colors hover:bg-accent/50">
         <span className="flex items-center gap-1.5">
-          {count > 0 && <AlertTriangle className="size-3.5 text-amber-500" />}
+          {count > 0 && <AlertTriangle className="size-3.5 text-warning" />}
           {label}
         </span>
         <span className={count > 0 ? 'font-medium' : 'text-muted-foreground'}>{count} 项</span>
@@ -624,9 +625,9 @@ function DiagnoseSection() {
       (report.orphanThumbBytes > 0 ? 1 : 0)
 
   return (
-    <section>
-      <h2 className="mb-4 text-sm font-medium text-muted-foreground">库体检</h2>
-      <div className="rounded-xl border p-5">
+    <Card>
+      <CardHeader title="库体检" />
+      <CardBody>
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="grid size-10 place-items-center rounded-lg bg-primary/10">
@@ -735,43 +736,91 @@ function DiagnoseSection() {
             </DiagnoseList>
           </div>
         )}
-      </div>
-    </section>
+      </CardBody>
+    </Card>
   )
 }
 
 export function SettingsPage() {
-  const { mode, setMode } = useThemeStore()
+  const { mode, setMode, preset, setPreset } = useThemeStore()
 
   return (
-    <div className="mx-auto max-w-3xl space-y-10 p-8">
+    <div className="mx-auto max-w-[1400px] space-y-6 p-8">
       <header>
         <h1 className="font-serif text-2xl font-semibold">设置</h1>
       </header>
 
-      <section>
-        <h2 className="mb-4 text-sm font-medium text-muted-foreground">外观</h2>
-        <div className="grid grid-cols-2 gap-4">
-          {(['dark', 'light'] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={cn(
-                'rounded-xl border-2 p-4 text-left transition-colors',
-                mode === m ? 'border-primary bg-primary/5' : 'border-border hover:border-ring/50'
-              )}
-            >
-              <div
-                className={cn(
-                  'mb-3 h-16 rounded-lg border',
-                  m === 'dark' ? 'bg-zinc-900' : 'bg-orange-50'
-                )}
-              />
-              <span className="text-sm font-medium">{m === 'dark' ? '深色 · 墨' : '浅色 · 纸'}</span>
-            </button>
-          ))}
-        </div>
-      </section>
+      <Card>
+        <CardHeader title="外观" />
+        <CardBody className="space-y-6">
+          <div>
+            <p className="mb-3 text-sm font-medium">主题风格</p>
+            <div className="grid grid-cols-2 gap-4">
+              {(
+                [
+                  {
+                    key: 'paper',
+                    label: '纸墨书斋',
+                    desc: '暖纸 · 朱砂 · 书房雅气',
+                    // 预览色条与 index.css 令牌对应：朱砂 / 暖纸 / 墨色
+                    swatches: ['oklch(0.55 0.19 32)', 'oklch(0.985 0.002 85)', 'oklch(0.16 0.004 70)']
+                  },
+                  {
+                    key: 'comic',
+                    label: '现代漫画',
+                    desc: '油墨 · 钴蓝/信号黄 · 网点纹理',
+                    // 预览色条：钴蓝 / 信号黄 / 墨蓝黑
+                    swatches: ['oklch(0.5 0.19 262)', 'oklch(0.86 0.15 95)', 'oklch(0.17 0.025 265)']
+                  }
+                ] as const
+              ).map((p) => (
+                <button
+                  key={p.key}
+                  onClick={() => setPreset(p.key)}
+                  className={cn(
+                    'rounded-xl border-2 p-4 text-left transition-colors',
+                    preset === p.key
+                      ? 'border-primary bg-primary/5'
+                      : 'border-border hover:border-ring/50'
+                  )}
+                >
+                  <div className="mb-3 flex h-8 overflow-hidden rounded-lg border">
+                    {p.swatches.map((c) => (
+                      <span key={c} className="h-full flex-1" style={{ background: c }} />
+                    ))}
+                  </div>
+                  <span className="text-sm font-medium">{p.label}</span>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{p.desc}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <p className="mb-3 text-sm font-medium">颜色模式</p>
+            <div className="grid grid-cols-2 gap-4">
+              {(['dark', 'light'] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={cn(
+                    'rounded-xl border-2 p-4 text-left transition-colors',
+                    mode === m ? 'border-primary bg-primary/5' : 'border-border hover:border-ring/50'
+                  )}
+                >
+                  <div
+                    className={cn(
+                      'mb-3 h-16 rounded-lg border',
+                      m === 'dark' ? 'bg-zinc-900' : 'bg-orange-50'
+                    )}
+                  />
+                  <span className="text-sm font-medium">{m === 'dark' ? '深色' : '浅色'}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </CardBody>
+      </Card>
 
       <ReaderDefaultsSection />
       <GeneralSection />

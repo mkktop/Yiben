@@ -44,7 +44,7 @@ export function AppShell() {
     <div className="flex h-screen overflow-hidden">
       <aside className="flex w-56 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
         <div className="flex h-14 items-center gap-2.5 px-5 [-webkit-app-region:drag]">
-          <div className="grid size-8 place-items-center rounded-lg bg-primary font-serif text-lg font-bold text-primary-foreground">
+          <div className="grid size-8 place-items-center rounded-lg bg-gradient-to-br from-primary to-primary/85 font-serif text-lg font-bold text-primary-foreground shadow-sm transition-transform duration-150 hover:scale-105">
             一
           </div>
           <span className="font-serif text-lg font-semibold tracking-wide">一本</span>
@@ -57,26 +57,35 @@ export function AppShell() {
               to={to}
               className={({ isActive }) =>
                 cn(
-                  'flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
+                  'relative flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors duration-150',
                   isActive
-                    ? 'bg-sidebar-accent font-medium text-sidebar-accent-foreground'
-                    : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground'
+                    ? 'bg-sidebar-accent font-medium text-foreground'
+                    : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground'
                 )
               }
             >
-              <Icon className="size-4 shrink-0" />
-              {label}
+              {({ isActive }) => (
+                <>
+                  {isActive && (
+                    <span className="absolute top-1/2 left-0 h-5 w-[3px] -translate-y-1/2 rounded-full bg-primary" />
+                  )}
+                  <Icon className="size-4 shrink-0" />
+                  {label}
+                </>
+              )}
             </NavLink>
           ))}
         </nav>
 
-        <div className="border-t border-sidebar-border px-5 py-3.5">
+        <div className="border-t border-sidebar-border px-3 py-2.5">
           <button
             onClick={() => hasUpdate && navigate('/settings')}
             title={hasUpdate ? '发现新版本，点击前往设置页下载' : undefined}
             className={cn(
-              'flex items-center gap-1.5 text-xs text-muted-foreground',
-              hasUpdate && 'text-primary transition-colors hover:text-primary/80'
+              'flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors duration-150',
+              hasUpdate
+                ? 'text-primary hover:bg-sidebar-accent/60 hover:text-primary/80'
+                : 'text-muted-foreground/80 hover:bg-sidebar-accent/60 hover:text-foreground'
             )}
           >
             {currentVersion ? `v${currentVersion}` : ''}
@@ -106,7 +115,7 @@ export function AppShell() {
                 }
               }}
               placeholder="搜索书架，回车查看结果…"
-              className="peer h-9 rounded-full border-transparent bg-muted/60 pl-10 pr-20 shadow-sm transition-colors placeholder:text-muted-foreground/60 hover:bg-muted focus-visible:bg-background focus-visible:outline-ring/25"
+              className="peer h-9 rounded-full border-transparent bg-muted/60 pl-10 pr-20 transition placeholder:text-muted-foreground/60 hover:bg-muted focus-visible:border-transparent focus-visible:bg-background focus-visible:shadow-xs focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:outline-none"
             />
             {query ? (
               <button
@@ -117,7 +126,7 @@ export function AppShell() {
                 <X className="size-3.5" />
               </button>
             ) : (
-              <kbd className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 rounded border border-border/70 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium tracking-wider text-muted-foreground/80 transition-opacity peer-focus:opacity-0">
+              <kbd className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 rounded-full border border-border/50 bg-muted/30 px-1.5 py-0.5 text-[10px] font-medium tracking-wider text-muted-foreground/70 transition-opacity peer-focus:opacity-0">
                 Ctrl K
               </kbd>
             )}
@@ -136,9 +145,16 @@ export function AppShell() {
             <WindowControls />
           </div>
         </header>
-        <main className="flex-1 overflow-y-auto">
-          <Outlet />
-        </main>
+        <div className="relative min-h-0 flex-1">
+          <main className="h-full overflow-y-auto">
+            <Outlet />
+          </main>
+          {/* 书房顶光：--ambient 径向光晕，浅色更亮、深色更收敛 */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 top-0 h-60 bg-[radial-gradient(ellipse_60%_100%_at_50%_0%,var(--ambient),transparent_70%)] opacity-35 dark:opacity-20"
+          />
+        </div>
       </div>
     </div>
   )

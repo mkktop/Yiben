@@ -8,6 +8,7 @@ import {
   X
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Dialog } from '@/components/ui/dialog'
 import { useAsync } from '@/hooks/useAsync'
 import { useDataStore } from '@/stores/data'
 import { CoverGrid, EmptyHint } from '@/components/library/CoverGrid'
@@ -66,87 +67,70 @@ function LibraryManager({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-6"
-      onClick={() => !busy && onClose()}
-    >
-      <div
-        className="w-full max-w-md rounded-xl border bg-background shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-border/60 px-5 py-3.5">
-          <h2 className="text-sm font-semibold">书库管理</h2>
-          <Button variant="ghost" size="icon" className="size-7" onClick={onClose} disabled={busy}>
-            <X className="size-4" />
-          </Button>
-        </div>
-
-        <div className="max-h-80 overflow-y-auto p-3">
-          {libraries.map((lib) => (
-            <div key={lib.id} className="rounded-lg px-2 py-2.5 hover:bg-accent/60">
-              <div className="flex items-center gap-3">
-                <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted">
-                  <LibraryIcon className="size-4 text-muted-foreground" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{lib.name}</p>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {lib.kind === 'cloud189' ? '天翼云盘' : lib.kind === '115' ? '115 网盘' : '本地'} ·{' '}
-                    {lib.path}
-                  </p>
-                </div>
-                {confirmId === lib.id ? (
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      className="h-7 px-2.5 text-xs"
-                      disabled={busy}
-                      onClick={() => void remove(lib)}
-                    >
-                      确认删除
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2.5 text-xs"
-                      onClick={() => setConfirmId(null)}
-                      disabled={busy}
-                    >
-                      取消
-                    </Button>
-                  </div>
-                ) : (
+    <Dialog title="书库管理" onClose={onClose} closeDisabled={busy} footer={
+      <Button size="sm" variant="outline" onClick={onClose} disabled={busy}>
+        完成
+      </Button>
+    }>
+      <div className="max-h-80 overflow-y-auto p-3">
+        {libraries.map((lib) => (
+          <div key={lib.id} className="rounded-lg px-2 py-2.5 hover:bg-accent/60">
+            <div className="flex items-center gap-3">
+              <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted">
+                <LibraryIcon className="size-4 text-muted-foreground" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">{lib.name}</p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {lib.kind === 'cloud189' ? '天翼云盘' : lib.kind === '115' ? '115 网盘' : '本地'} ·{' '}
+                  {lib.path}
+                </p>
+              </div>
+              {confirmId === lib.id ? (
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    className="h-7 px-2.5 text-xs"
+                    disabled={busy}
+                    onClick={() => void remove(lib)}
+                  >
+                    确认删除
+                  </Button>
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-7 shrink-0 px-2 text-xs text-muted-foreground hover:text-destructive"
-                    onClick={() => setConfirmId(lib.id)}
+                    className="h-7 px-2.5 text-xs"
+                    onClick={() => setConfirmId(null)}
+                    disabled={busy}
                   >
-                    <Trash2 className="size-3.5" />
-                    删除
+                    取消
                   </Button>
-                )}
-              </div>
-              {confirmId === lib.id && (
-                <p className="mt-1.5 pl-12 text-xs text-destructive">
-                  将从书架移除该库的全部漫画与阅读进度，{lib.kind !== 'local' && '云端缓存及'}
-                  原文件不受影响。
-                </p>
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 shrink-0 px-2 text-xs text-muted-foreground hover:text-destructive"
+                  onClick={() => setConfirmId(lib.id)}
+                >
+                  <Trash2 className="size-3.5" />
+                  删除
+                </Button>
               )}
             </div>
-          ))}
-        </div>
-
-        {error && <p className="px-5 pb-2 text-xs text-destructive">{error}</p>}
-
-        <div className="flex justify-end border-t border-border/60 px-5 py-3">
-          <Button size="sm" variant="outline" onClick={onClose}>
-            完成
-          </Button>
-        </div>
+            {confirmId === lib.id && (
+              <p className="mt-1.5 pl-12 text-xs text-destructive">
+                将从书架移除该库的全部漫画与阅读进度，{lib.kind !== 'local' && '云端缓存及'}
+                原文件不受影响。
+              </p>
+            )}
+          </div>
+        ))}
       </div>
-    </div>
+
+      {error && <p className="px-5 pb-3 text-xs text-destructive">{error}</p>}
+    </Dialog>
   )
 }
 
@@ -353,12 +337,11 @@ export function LibraryPage() {
 
       <div ref={scrollRef} className="min-h-0 flex-1 px-8 pb-8">
         {!hasLibraries ? (
-          <EmptyHint>
-            还没有书库。
-            <button onClick={addLibrary} className="ml-1 text-primary underline underline-offset-2">
-              添加本地文件夹
-            </button>
-            ，把漫画收进来（也可在左侧「网盘」添加云端目录）
+          <EmptyHint
+            hint="把本地漫画文件夹收进来，或在左侧「网盘」添加云端目录"
+            action={{ label: '添加本地书库', onClick: addLibrary }}
+          >
+            还没有书库
           </EmptyHint>
         ) : (
           <CoverGrid

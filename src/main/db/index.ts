@@ -33,6 +33,9 @@ export interface SeriesRow {
   year?: number | null
   /** 语言代码（ComicInfo LanguageISO） */
   language?: string | null
+  /** 查询时聚合（listSeries），非表列：已读完章节数 / 章节总数 */
+  read_chapters?: number
+  total_chapters?: number
 }
 
 export interface ChapterRow {
@@ -611,6 +614,12 @@ export function countByLibrary(libraryId: number): { series: number; chapters: n
 
 // ---------- 查询 ----------
 
+/** 系列级进度聚合列（listSeries / recentlyAdded 共用）：章节总数 + 已读完章节数 */
+const SERIES_AGG = `
+  (SELECT COUNT(*) FROM chapters c WHERE c.series_id = s.id) AS total_chapters,
+  (SELECT COUNT(*) FROM progress p JOIN chapters c ON c.id = p.chapter_id
+     WHERE c.series_id = s.id AND p.completed = 1) AS read_chapters`
+
 export interface SeriesListOptions {
   libraryId?: number
   query?: string
@@ -685,7 +694,10 @@ export function listSeries(opts: SeriesListOptions = {}): SeriesRow[] {
     params.offset = opts.offset ?? 0
   }
   return db
-    .prepare(`SELECT s.* FROM series s ${where} ${order} ${limit}`)
+    .prepare(
+      `SELECT s.*, ${SERIES_AGG}
+       FROM series s ${where} ${order} ${limit}`
+    )
     .all(params) as SeriesRow[]
 }
 
@@ -867,7 +879,8 @@ export function continueReading(limit: number): ContinueRow[] {
 export function recentlyAdded(limit: number): SeriesRow[] {
   return db
     .prepare(
-      'SELECT * FROM series WHERE hidden = 0 AND missing = 0 ORDER BY added_at DESC LIMIT ?'
+      `SELECT s.*, ${SERIES_AGG}
+       FROM series s WHERE s.hidden = 0 AND s.missing = 0 ORDER BY s.added_at DESC LIMIT ?`
     )
     .all(limit) as SeriesRow[]
 }

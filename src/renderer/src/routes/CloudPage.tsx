@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Card, CardBody, CardHeader } from '@/components/ui/card'
 import { useAsync } from '@/hooks/useAsync'
 import { useDataStore } from '@/stores/data'
 import { cn, errorMessage } from '@/lib/utils'
@@ -54,6 +55,22 @@ function fmtSize(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`
 }
 
+/** 网盘类型徽章：统一小圆角 chip，按类型着色（未知类型按本地兜底） */
+const KIND_BADGE: Record<string, { label: string; cls: string }> = {
+  cloud189: { label: '天翼云', cls: 'bg-primary/10 text-primary' },
+  '115': { label: '115', cls: 'bg-sky-500/10 text-sky-600 dark:text-sky-400' },
+  local: { label: '本地', cls: 'bg-muted text-muted-foreground' }
+}
+
+function KindBadge({ kind }: { kind: string }) {
+  const b = KIND_BADGE[kind] ?? KIND_BADGE.local!
+  return (
+    <span className={cn('shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium', b.cls)}>
+      {b.label}
+    </span>
+  )
+}
+
 /**
  * 云盘页（两层结构）：
  * 1. 网盘列表 —— 只看连接状态，不加载任何目录；点进具体网盘才进入第 2 层
@@ -72,9 +89,11 @@ export function CloudPage() {
 
   if (!status || !status115) {
     return (
-      <div className="mx-auto max-w-3xl p-8">
+      <div className="mx-auto max-w-[1400px] space-y-6 p-8">
         <CloudHeader />
-        <div className="rounded-xl border p-5 text-sm text-muted-foreground">加载中…</div>
+        <Card className="p-5">
+          <p className="text-sm text-muted-foreground">加载中…</p>
+        </Card>
       </div>
     )
   }
@@ -300,32 +319,37 @@ function DriveList({
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 p-8">
+    <div className="mx-auto max-w-[1400px] space-y-6 p-8">
       <CloudHeader />
 
       {/* 已连接 / 待连接的网盘 */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-medium text-muted-foreground">我的网盘</h2>
-
-        {/* 天翼云盘 */}
-        <div className="rounded-xl border p-5">
+      <Card>
+        <CardHeader
+          title={
+            <span className="flex items-center gap-2">
+              天翼云盘
+              <KindBadge kind="cloud189" />
+            </span>
+          }
+          action={
+            status.loggedIn ? (
+              <Button size="sm" onClick={onEnterCloud189}>
+                进入
+                <ChevronRight />
+              </Button>
+            ) : undefined
+          }
+        />
+        <CardBody>
           <DriveCardRow
-            name="天翼云盘"
             username={status.username}
             loggedIn={status.loggedIn}
             mountCount={cloud189Mounts.length}
             capacity={capacity}
             capacityLabel="个人云空间"
           />
-          {status.loggedIn ? (
-            <div className="mt-3 flex justify-end">
-              <Button size="sm" onClick={onEnterCloud189}>
-                进入
-                <ChevronRight />
-              </Button>
-            </div>
-          ) : (
-            <div className="mt-3 flex shrink-0 justify-end gap-2">
+          {!status.loggedIn && (
+            <div className="flex shrink-0 justify-end gap-2">
               <Button size="sm" variant="outline" onClick={() => setQr189Open((v) => !v)}>
                 扫码登录
               </Button>
@@ -364,7 +388,7 @@ function DriveList({
 
           {showLogin && !status.loggedIn && (
             <form
-              className="mt-4 flex flex-col gap-3 border-t border-border/60 pt-4 sm:flex-row"
+              className="flex flex-col gap-3 border-t border-border/60 pt-4 sm:flex-row"
               onSubmit={(e) => {
                 e.preventDefault()
                 if (!busy && username && password) void login()
@@ -387,31 +411,40 @@ function DriveList({
               </Button>
             </form>
           )}
-          {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+          {error && <p className="text-xs text-destructive">{error}</p>}
           {showLogin && !status.loggedIn && (
-            <p className="mt-2 text-xs text-muted-foreground">凭据只保存在本机（系统级加密）</p>
+            <p className="text-xs text-muted-foreground">凭据只保存在本机（系统级加密）</p>
           )}
-        </div>
+        </CardBody>
+      </Card>
 
-        {/* 115 网盘 */}
-        <div className="rounded-xl border p-5">
+      <Card>
+        <CardHeader
+          title={
+            <span className="flex items-center gap-2">
+              115 网盘
+              <KindBadge kind="115" />
+            </span>
+          }
+          action={
+            status115.loggedIn ? (
+              <Button size="sm" onClick={onEnter115}>
+                进入
+                <ChevronRight />
+              </Button>
+            ) : undefined
+          }
+        />
+        <CardBody>
           <DriveCardRow
-            name="115 网盘"
             username={status115.username}
             loggedIn={status115.loggedIn}
             mountCount={mounts115.length}
             capacity={capacity115}
             capacityLabel="云空间"
           />
-          {status115.loggedIn ? (
-            <div className="mt-3 flex justify-end">
-              <Button size="sm" onClick={onEnter115}>
-                进入
-                <ChevronRight />
-              </Button>
-            </div>
-          ) : (
-            <div className="mt-3 flex shrink-0 justify-end gap-2">
+          {!status115.loggedIn && (
+            <div className="flex shrink-0 justify-end gap-2">
               <Button size="sm" variant="outline" onClick={() => setQr115Open((v) => !v)}>
                 扫码登录
               </Button>
@@ -438,64 +471,64 @@ function DriveList({
               closeLabel="收起"
             />
           )}
-        </div>
-      </section>
+        </CardBody>
+      </Card>
 
       {/* 添加网盘（多网盘架构的扩展入口） */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-medium text-muted-foreground">添加网盘</h2>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-          {PROVIDERS.map((p) => {
-            const connected =
-              (p.id === 'cloud189' && status.loggedIn) || (p.id === '115' && status115.loggedIn)
-            return (
-              <button
-                key={p.id}
-                disabled={!p.available || connected}
-                onClick={() => {
-                  if (p.id === 'cloud189') setQr189Open(true)
-                  if (p.id === '115') setQr115Open(true)
-                }}
-                title={
-                  connected
-                    ? '已连接'
-                    : p.available
-                      ? '连接账号'
-                      : '即将支持，敬请期待'
-                }
-                className={cn(
-                  'flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition-colors',
-                  connected
-                    ? 'border-primary/40 bg-primary/5'
-                    : p.available
-                      ? 'hover:border-primary/40 hover:bg-accent'
-                      : 'cursor-not-allowed opacity-45'
-                )}
-              >
-                <Cloud className="size-5 text-muted-foreground" />
-                <span className="text-sm">{p.name}</span>
-                <span className="text-[11px] text-muted-foreground">
-                  {connected ? '已连接' : p.desc}
-                </span>
-              </button>
-            )
-          })}
-        </div>
-      </section>
+      <Card>
+        <CardHeader title="添加网盘" />
+        <CardBody>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            {PROVIDERS.map((p) => {
+              const connected =
+                (p.id === 'cloud189' && status.loggedIn) || (p.id === '115' && status115.loggedIn)
+              return (
+                <button
+                  key={p.id}
+                  disabled={!p.available || connected}
+                  onClick={() => {
+                    if (p.id === 'cloud189') setQr189Open(true)
+                    if (p.id === '115') setQr115Open(true)
+                  }}
+                  title={
+                    connected
+                      ? '已连接'
+                      : p.available
+                        ? '连接账号'
+                        : '即将支持，敬请期待'
+                  }
+                  className={cn(
+                    'flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition-colors',
+                    connected
+                      ? 'border-primary/40 bg-primary/5'
+                      : p.available
+                        ? 'hover:border-primary/40 hover:bg-accent'
+                        : 'cursor-not-allowed opacity-45'
+                  )}
+                >
+                  <Cloud className="size-5 text-muted-foreground" />
+                  <span className="text-sm">{p.name}</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {connected ? '已连接' : p.desc}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </CardBody>
+      </Card>
     </div>
   )
 }
 
-/** 网盘卡片的状态行：图标 + 名称 + 账号/挂载/容量摘要 */
+/** 网盘卡片的状态行：图标 + 账号/挂载/容量摘要（名称与徽章在卡片头） */
 function DriveCardRow({
-  name,
   username,
   loggedIn,
   mountCount,
   capacity,
   capacityLabel
 }: {
-  name: string
   username: string
   loggedIn: boolean
   mountCount: number
@@ -506,7 +539,7 @@ function DriveCardRow({
     <div className="flex items-center gap-4">
       <div
         className={cn(
-          'grid size-11 place-items-center rounded-lg',
+          'grid size-11 shrink-0 place-items-center rounded-lg',
           loggedIn ? 'bg-primary/10' : 'bg-muted'
         )}
       >
@@ -514,17 +547,14 @@ function DriveCardRow({
       </div>
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium">
-          {name}
-          {loggedIn && (
-            <span className="ml-2 text-xs font-normal text-muted-foreground">{username}</span>
-          )}
+          {loggedIn ? username : '未连接'}
         </p>
         <p className="mt-0.5 text-xs text-muted-foreground">
           {loggedIn
             ? mountCount > 0
               ? `已挂载 ${mountCount} 个目录`
               : '还没有挂载目录'
-            : '未连接'}
+            : '连接后可把云端漫画目录挂载到书架'}
           {capacity && capacity.total > 0 && (
             <span className="ml-2">
               · {capacityLabel} {((capacity.total - capacity.free) / 1024 ** 3).toFixed(1)} /{' '}
@@ -564,84 +594,92 @@ function MountListSection({
     (seriesList ?? []).filter((s) => s.library_id === libraryId).length
 
   return (
-    <section className="space-y-2">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-medium">已挂载目录</h2>
-        <span className="text-xs text-muted-foreground">{mounts?.length ?? 0} 个</span>
-      </div>
-      <div className="divide-y divide-border/60 rounded-xl border">
+    <Card>
+      <CardHeader
+        title="已挂载目录"
+        action={<span className="text-xs text-muted-foreground">{mounts?.length ?? 0} 个</span>}
+      />
+      <CardBody>
         {(mounts ?? []).length === 0 ? (
           <p className="px-4 py-6 text-center text-xs text-muted-foreground">
             还没有挂载目录，在下方浏览并添加
           </p>
         ) : (
-          (mounts ?? []).map((lib) => (
-            <div key={lib.id} className="px-4 py-3">
-              <div className="flex items-center gap-3">
-                <Folder className="size-4 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm">{lib.name}</p>
-                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                    {spaceLabel(lib)} · {seriesCount(lib.id)} 部漫画
-                  </p>
+          <div className="space-y-1">
+            {(mounts ?? []).map((lib) => (
+              <div
+                key={lib.id}
+                className="rounded-lg px-4 py-3 transition-colors hover:bg-accent/60"
+              >
+                <div className="flex items-center gap-3">
+                  <Folder className="size-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <p className="flex items-center gap-2 truncate text-sm">
+                      <span className="min-w-0 truncate">{lib.name}</span>
+                      <KindBadge kind={lib.kind} />
+                    </p>
+                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                      {spaceLabel(lib)} · {seriesCount(lib.id)} 部漫画
+                    </p>
+                  </div>
+                  {confirmId === lib.id ? (
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        className="h-7 px-2.5 text-xs"
+                        disabled={busy}
+                        onClick={() => onRemove(lib)}
+                      >
+                        确认移除
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2.5 text-xs"
+                        onClick={() => setConfirmId(null)}
+                        disabled={busy}
+                      >
+                        取消
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs text-muted-foreground"
+                        disabled={rescanningId !== null}
+                        onClick={() => onRescan(lib)}
+                        title="重新扫描该目录"
+                      >
+                        <RefreshCw className={cn('size-3.5', rescanningId === lib.id && 'animate-spin')} />
+                        {rescanningId === lib.id ? '扫描中' : '重扫'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
+                        disabled={busy}
+                        onClick={() => setConfirmId(lib.id)}
+                      >
+                        <Trash2 className="size-3.5" />
+                        移除
+                      </Button>
+                    </div>
+                  )}
                 </div>
-                {confirmId === lib.id ? (
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      className="h-7 px-2.5 text-xs"
-                      disabled={busy}
-                      onClick={() => onRemove(lib)}
-                    >
-                      确认移除
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2.5 text-xs"
-                      onClick={() => setConfirmId(null)}
-                      disabled={busy}
-                    >
-                      取消
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2 text-xs text-muted-foreground"
-                      disabled={rescanningId !== null}
-                      onClick={() => onRescan(lib)}
-                      title="重新扫描该目录"
-                    >
-                      <RefreshCw className={cn('size-3.5', rescanningId === lib.id && 'animate-spin')} />
-                      {rescanningId === lib.id ? '扫描中' : '重扫'}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
-                      disabled={busy}
-                      onClick={() => setConfirmId(lib.id)}
-                    >
-                      <Trash2 className="size-3.5" />
-                      移除
-                    </Button>
-                  </div>
+                {confirmId === lib.id && (
+                  <p className="mt-1.5 pl-7 text-xs text-destructive">
+                    将从书架移除该目录的全部漫画与阅读进度，云端缓存一并清理，云端原文件不受影响。
+                  </p>
                 )}
               </div>
-              {confirmId === lib.id && (
-                <p className="mt-1.5 pl-7 text-xs text-destructive">
-                  将从书架移除该目录的全部漫画与阅读进度，云端缓存一并清理，云端原文件不受影响。
-                </p>
-              )}
-            </div>
-          ))
+            ))}
+          </div>
         )}
-      </div>
-    </section>
+      </CardBody>
+    </Card>
   )
 }
 
@@ -675,113 +713,119 @@ function BrowseSection({
   addBusy: boolean
 }) {
   return (
-    <section className="space-y-2">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-medium">
-          浏览目录<span className="ml-2 text-xs font-normal text-muted-foreground">添加新挂载</span>
-        </h2>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7"
-          onClick={onReload}
-          title="刷新"
-          disabled={browsing}
-        >
-          <RefreshCw className={cn('size-3.5', browsing && 'animate-spin')} />
-        </Button>
-      </div>
-
-      {/* 面包屑（可点任意层级直达） */}
-      <div className="flex min-h-7 flex-wrap items-center gap-1 text-xs text-muted-foreground">
-        {stack.length > 0 && (
-          <button
-            onClick={onUp}
-            className="grid size-6 place-items-center rounded hover:bg-accent"
-            title="上一级"
-          >
-            <ArrowLeft className="size-3.5" />
-          </button>
-        )}
-        <button
-          onClick={onRoot}
-          className={cn('rounded px-1 hover:text-foreground', stack.length === 0 && 'text-foreground')}
-        >
-          根目录
-        </button>
-        {stack.map((s, i) => (
-          <span key={s.id} className="flex items-center gap-1">
-            <span className="opacity-40">/</span>
-            <button
-              onClick={() => onCrumb(s, i)}
-              className={cn(
-                'rounded px-1 hover:text-foreground',
-                i === stack.length - 1 && 'text-foreground'
-              )}
-            >
-              {s.name}
-            </button>
-          </span>
-        ))}
-      </div>
-
-      <div className="max-h-80 min-h-28 overflow-y-auto rounded-lg border">
-        {browsing ? (
-          <div className="flex items-center justify-center py-8 text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" />
-          </div>
-        ) : error && !browse ? (
-          <p className="px-3 py-8 text-center text-xs text-destructive">{error}</p>
-        ) : !browse || (browse.folders.length === 0 && browse.files.length === 0) ? (
-          <p className="px-3 py-8 text-center text-xs text-muted-foreground">
-            此目录为空
-          </p>
-        ) : (
+    <Card>
+      <CardHeader
+        title={
           <>
-            {browse.folders.map((f) => (
-              <button
-                key={f.id}
-                onClick={() => onEnter(f)}
-                className="flex w-full items-center gap-2 border-b border-border/60 px-3 py-2.5 text-left text-sm last:border-0 hover:bg-accent"
-              >
-                <Folder className="size-4 shrink-0 text-muted-foreground" />
-                <span className="truncate">{f.name}</span>
-                <span className="ml-auto shrink-0 text-xs text-muted-foreground">进入</span>
-              </button>
-            ))}
-            {browse.files.length > 0 && (
-              <div className="border-t border-border bg-muted/30 px-3 py-1.5">
-                <p className="py-1 text-[11px] text-muted-foreground">
-                  文件 {browse.files.length} 个（挂载所在目录后自动识别漫画压缩包）
-                </p>
-                {browse.files.slice(0, 30).map((f) => (
-                  <div
-                    key={f.id}
-                    className="flex items-center gap-2 py-1 text-xs text-muted-foreground"
-                  >
-                    <FileArchive className="size-3.5 shrink-0 opacity-60" />
-                    <span className="truncate">{f.name}</span>
-                    {(f.size ?? 0) > 0 && (
-                      <span className="ml-auto shrink-0">{fmtSize(f.size ?? 0)}</span>
-                    )}
-                  </div>
-                ))}
-                {browse.files.length > 30 && (
-                  <p className="py-1 text-[11px] text-muted-foreground">
-                    …其余 {browse.files.length - 30} 个从略
-                  </p>
-                )}
-              </div>
-            )}
+            浏览目录
+            <span className="ml-2 text-xs font-normal text-muted-foreground">添加新挂载</span>
           </>
-        )}
-      </div>
+        }
+        action={
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            onClick={onReload}
+            title="刷新"
+            disabled={browsing}
+          >
+            <RefreshCw className={cn('size-3.5', browsing && 'animate-spin')} />
+          </Button>
+        }
+      />
+      <CardBody>
+        {/* 面包屑（可点任意层级直达） */}
+        <div className="flex min-h-7 flex-wrap items-center gap-1 text-xs text-muted-foreground">
+          {stack.length > 0 && (
+            <button
+              onClick={onUp}
+              className="grid size-6 place-items-center rounded hover:bg-accent"
+              title="上一级"
+            >
+              <ArrowLeft className="size-3.5" />
+            </button>
+          )}
+          <button
+            onClick={onRoot}
+            className={cn('rounded px-1 hover:text-foreground', stack.length === 0 && 'text-foreground')}
+          >
+            根目录
+          </button>
+          {stack.map((s, i) => (
+            <span key={s.id} className="flex items-center gap-1">
+              <span className="opacity-40">/</span>
+              <button
+                onClick={() => onCrumb(s, i)}
+                className={cn(
+                  'rounded px-1 hover:text-foreground',
+                  i === stack.length - 1 && 'text-foreground'
+                )}
+              >
+                {s.name}
+              </button>
+            </span>
+          ))}
+        </div>
 
-      <Button size="sm" className="w-full" disabled={addBusy || browsing} onClick={onAdd}>
-        {addBusy ? <Loader2 className="animate-spin" /> : <FolderPlus />}
-        {addLabel}
-      </Button>
-    </section>
+        <div className="max-h-80 min-h-28 overflow-y-auto rounded-lg border p-1.5">
+          {browsing ? (
+            <div className="flex items-center justify-center py-8 text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+            </div>
+          ) : error && !browse ? (
+            <p className="px-3 py-8 text-center text-xs text-destructive">{error}</p>
+          ) : !browse || (browse.folders.length === 0 && browse.files.length === 0) ? (
+            <p className="px-3 py-8 text-center text-xs text-muted-foreground">
+              此目录为空
+            </p>
+          ) : (
+            <>
+              {browse.folders.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => onEnter(f)}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors hover:bg-accent/60"
+                >
+                  <Folder className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="truncate">{f.name}</span>
+                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">进入</span>
+                </button>
+              ))}
+              {browse.files.length > 0 && (
+                <div className="mt-1 rounded-lg border bg-muted/30 px-3 py-1.5">
+                  <p className="py-1 text-[11px] text-muted-foreground">
+                    文件 {browse.files.length} 个（挂载所在目录后自动识别漫画压缩包）
+                  </p>
+                  {browse.files.slice(0, 30).map((f) => (
+                    <div
+                      key={f.id}
+                      className="flex items-center gap-2 py-1 text-xs text-muted-foreground"
+                    >
+                      <FileArchive className="size-3.5 shrink-0 opacity-60" />
+                      <span className="truncate">{f.name}</span>
+                      {(f.size ?? 0) > 0 && (
+                        <span className="ml-auto shrink-0">{fmtSize(f.size ?? 0)}</span>
+                      )}
+                    </div>
+                  ))}
+                  {browse.files.length > 30 && (
+                    <p className="py-1 text-[11px] text-muted-foreground">
+                      …其余 {browse.files.length - 30} 个从略
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <Button size="sm" className="w-full" disabled={addBusy || browsing} onClick={onAdd}>
+          {addBusy ? <Loader2 className="animate-spin" /> : <FolderPlus />}
+          {addLabel}
+        </Button>
+      </CardBody>
+    </Card>
   )
 }
 
@@ -925,20 +969,35 @@ function Cloud189Drive({
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 p-8">
-      {/* 网盘头 */}
-      <div className="space-y-4">
-        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-          <button onClick={onExit} className="rounded px-1 py-0.5 hover:bg-accent hover:text-foreground">
-            网盘
-          </button>
-          <span className="opacity-40">/</span>
-          <span className="text-foreground">天翼云盘</span>
-        </div>
+    <div className="mx-auto max-w-[1400px] space-y-6 p-8">
+      {/* 面包屑 */}
+      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+        <button onClick={onExit} className="rounded px-1 py-0.5 hover:bg-accent hover:text-foreground">
+          网盘
+        </button>
+        <span className="opacity-40">/</span>
+        <span className="text-foreground">天翼云盘</span>
+      </div>
 
-        <div className="flex items-center justify-between">
+      {/* 网盘头 */}
+      <Card>
+        <CardHeader
+          title={
+            <span className="flex items-center gap-2">
+              天翼云盘
+              <KindBadge kind="cloud189" />
+            </span>
+          }
+          action={
+            <Button variant="outline" size="sm" onClick={() => void logout()}>
+              <LogOut />
+              断开
+            </Button>
+          }
+        />
+        <CardBody>
           <div className="flex items-center gap-4">
-            <div className="grid size-11 place-items-center rounded-lg bg-primary/10">
+            <div className="grid size-11 shrink-0 place-items-center rounded-lg bg-primary/10">
               <Cloud className="size-5 text-primary" />
             </div>
             <div>
@@ -952,36 +1011,32 @@ function Cloud189Drive({
               )}
             </div>
           </div>
-          <Button variant="outline" size="sm" onClick={() => void logout()}>
-            <LogOut />
-            断开
-          </Button>
-        </div>
 
-        {capacity && capacity.total > 0 && (
-          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-            <div
-              className="h-full rounded-full bg-primary"
-              style={{
-                width: `${Math.round(((capacity.total - capacity.free) / capacity.total) * 100)}%`
-              }}
-            />
+          {capacity && capacity.total > 0 && (
+            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-primary"
+                style={{
+                  width: `${Math.round(((capacity.total - capacity.free) / capacity.total) * 100)}%`
+                }}
+              />
+            </div>
+          )}
+
+          {/* 云空间切换：个人云 / 各家庭云 */}
+          <div className="flex flex-wrap gap-2">
+            <SourceChip active={familyId === ''} onClick={() => setFamilyId('')} label="个人云" />
+            {families.map((f) => (
+              <SourceChip
+                key={f.id}
+                active={familyId === f.id}
+                onClick={() => setFamilyId(f.id)}
+                label={`家庭云：${f.name}`}
+              />
+            ))}
           </div>
-        )}
-
-        {/* 云空间切换：个人云 / 各家庭云 */}
-        <div className="flex flex-wrap gap-2">
-          <SourceChip active={familyId === ''} onClick={() => setFamilyId('')} label="个人云" />
-          {families.map((f) => (
-            <SourceChip
-              key={f.id}
-              active={familyId === f.id}
-              onClick={() => setFamilyId(f.id)}
-              label={`家庭云：${f.name}`}
-            />
-          ))}
-        </div>
-      </div>
+        </CardBody>
+      </Card>
 
       <MountListSection
         mounts={mounts}
@@ -1131,20 +1186,35 @@ function Cloud115Drive({
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 p-8">
-      {/* 网盘头 */}
-      <div className="space-y-4">
-        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-          <button onClick={onExit} className="rounded px-1 py-0.5 hover:bg-accent hover:text-foreground">
-            网盘
-          </button>
-          <span className="opacity-40">/</span>
-          <span className="text-foreground">115 网盘</span>
-        </div>
+    <div className="mx-auto max-w-[1400px] space-y-6 p-8">
+      {/* 面包屑 */}
+      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+        <button onClick={onExit} className="rounded px-1 py-0.5 hover:bg-accent hover:text-foreground">
+          网盘
+        </button>
+        <span className="opacity-40">/</span>
+        <span className="text-foreground">115 网盘</span>
+      </div>
 
-        <div className="flex items-center justify-between">
+      {/* 网盘头 */}
+      <Card>
+        <CardHeader
+          title={
+            <span className="flex items-center gap-2">
+              115 网盘
+              <KindBadge kind="115" />
+            </span>
+          }
+          action={
+            <Button variant="outline" size="sm" onClick={() => void logout()}>
+              <LogOut />
+              断开
+            </Button>
+          }
+        />
+        <CardBody>
           <div className="flex items-center gap-4">
-            <div className="grid size-11 place-items-center rounded-lg bg-primary/10">
+            <div className="grid size-11 shrink-0 place-items-center rounded-lg bg-primary/10">
               <Cloud className="size-5 text-primary" />
             </div>
             <div>
@@ -1157,23 +1227,19 @@ function Cloud115Drive({
               )}
             </div>
           </div>
-          <Button variant="outline" size="sm" onClick={() => void logout()}>
-            <LogOut />
-            断开
-          </Button>
-        </div>
 
-        {capacity && capacity.total > 0 && (
-          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-            <div
-              className="h-full rounded-full bg-primary"
-              style={{
-                width: `${Math.round(((capacity.total - capacity.free) / capacity.total) * 100)}%`
-              }}
-            />
-          </div>
-        )}
-      </div>
+          {capacity && capacity.total > 0 && (
+            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-primary"
+                style={{
+                  width: `${Math.round(((capacity.total - capacity.free) / capacity.total) * 100)}%`
+                }}
+              />
+            </div>
+          )}
+        </CardBody>
+      </Card>
 
       <MountListSection
         mounts={mounts}

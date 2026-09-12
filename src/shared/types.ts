@@ -43,6 +43,9 @@ export interface Series {
   year?: number | null
   /** 语言代码（ComicInfo LanguageISO） */
   language?: string | null
+  /** 系列级进度聚合（series:list 返回，非表列）：已读完章节数 / 章节总数 */
+  read_chapters?: number
+  total_chapters?: number
 }
 
 export interface Chapter {

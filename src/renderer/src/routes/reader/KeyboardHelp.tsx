@@ -185,18 +185,18 @@ function Row({ caps }: { caps: Cap[] }): ReactNode {
 export function KeyboardHelp({ onClose }: { onClose: () => void }): ReactNode {
   return (
     <div
-      className="fixed inset-0 z-40 grid place-items-center bg-black/70 p-4"
+      className="fixed inset-0 z-40 grid place-items-center bg-black/50 p-4 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className="max-h-[92vh] w-[680px] max-w-full overflow-y-auto rounded-xl border bg-background p-5 shadow-2xl"
+        className="animate-scale-in max-h-[92vh] w-[680px] max-w-full overflow-y-auto rounded-2xl border border-border/50 bg-background/80 p-5 shadow-lg backdrop-blur-md"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold">快捷键</h3>
           <button
             onClick={onClose}
-            className="grid size-6 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="grid size-7 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             <X className="size-4" />
           </button>

@@ -37,6 +37,7 @@ import {
   updateSeriesMeta,
   rebuildFts,
   type LibraryRow,
+  type SeriesListOptions,
   type SeriesMetaPatch
 } from './db'
 import { scanOneLocalSeries } from './scanner'
@@ -184,17 +185,7 @@ export function registerIpc(): void {
     setSeriesTags(payload.seriesId, Array.isArray(payload.names) ? payload.names : [])
   )
 
-  ipcMain.handle(
-    'series:list',
-    (_e, opts: { libraryId?: number; query?: string; filter?: string; limit?: number; offset?: number }) =>
-      listSeries({
-        libraryId: opts.libraryId,
-        query: opts.query,
-        filter: opts.filter as 'all' | 'unread' | 'reading' | 'read' | 'recent',
-        limit: opts.limit,
-        offset: opts.offset
-      })
-  )
+  ipcMain.handle('series:list', (_e, opts: SeriesListOptions) => listSeries(opts))
 
   ipcMain.handle('series:get', (_e, id: number) => {
     const series = getSeries(id)
