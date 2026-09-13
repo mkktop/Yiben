@@ -168,6 +168,7 @@ const api = {
       rtl?: boolean
       rotate?: number
       spreadOffset?: 0 | 1
+      zoom?: number
     }) => ipcRenderer.invoke('reader:prefs:set', { seriesId, prefs }),
     getDefaults: () => ipcRenderer.invoke('reader:defaults:get'),
     setDefaults: (prefs: {
@@ -176,6 +177,7 @@ const api = {
       rtl?: boolean
       rotate?: number
       spreadOffset?: 0 | 1
+      zoom?: number
     }) => ipcRenderer.invoke('reader:defaults:set', prefs)
   },
   progress: {

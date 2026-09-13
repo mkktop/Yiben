@@ -16,6 +16,8 @@ interface ReaderState {
   widePages: number[]
   /** 双页配对偏移：0 = (1,2)(3,4)…；1 = 第 1 页单独、(2,3)(4,5)…（C 键切换） */
   spreadOffset: number
+  /** 阅读器缩放（0.5–4，1 = 100%）；放在 store 而非组件局部：翻页/切话/跨话拼接都保持 */
+  zoom: number
 
   /** 沉浸模式：隐藏 UI */
   immersive: boolean
@@ -41,6 +43,7 @@ export const useReaderStore = create<ReaderState>((set, get) => ({
   pageCount: 0,
   widePages: [],
   spreadOffset: 0,
+  zoom: 1,
   immersive: false,
   showThumbs: false,
 
@@ -54,6 +57,7 @@ export const useReaderStore = create<ReaderState>((set, get) => ({
       page: clampPage(startPage, pageCount),
       widePages: [],
       spreadOffset: prefs.spreadOffset ?? 0,
+      zoom: prefs.zoom ?? 1,
       immersive: false
     }),
 

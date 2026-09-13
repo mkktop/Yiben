@@ -27,8 +27,8 @@ let flushChain: Promise<void> = Promise.resolve()
 /** 同一目标的并发下载共用一个 promise，避免重复下载和写同一个文件 */
 const inflight = new Map<string, Promise<string>>()
 
-/** 全局并发下载上限：快速翻页/预取时不会同时开几十条连接挤爆带宽 */
-const MAX_CONCURRENT_DOWNLOADS = 3
+/** 全局并发下载上限：快速翻页/预取时不会同时开几十条连接挤爆带宽（与预载前向窗口 5 页对齐） */
+const MAX_CONCURRENT_DOWNLOADS = 5
 let activeDownloads = 0
 const downloadQueue: Array<() => void> = []
 

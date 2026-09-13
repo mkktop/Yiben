@@ -191,6 +191,8 @@ export interface ReaderPrefs {
   rotate?: number
   /** 双页配对偏移（C 键切换）：0 = (1,2)(3,4)…；1 = 第 1 页单独、(2,3)(4,5)… */
   spreadOffset?: 0 | 1
+  /** 阅读器缩放（0.5–4，1 = 100%）；翻页/切话保持，换适配方式或阅读模式时复位 */
+  zoom?: number
 }
 
 export function coverUrl(seriesId: number): string {

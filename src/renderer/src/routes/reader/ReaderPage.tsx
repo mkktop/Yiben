@@ -377,8 +377,8 @@ export function ReaderPage() {
     if (neighbors.prev) warm(neighbors.prev, [neighbors.prev.page_count - 1])
   }, [neighbors])
 
-  // 预加载 ±3 页（PDF 走 pdfjs，不走图片协议）；跨话软切换后预载跟随归属话
-  usePagePreload(positionId, page, positionCount, 3, chapter?.kind !== 'pdf')
+  // 预加载 前5后2 页（PDF 走 pdfjs，不走图片协议）；跨话软切换后预载跟随归属话
+  usePagePreload(positionId, page, positionCount, 5, 2, chapter?.kind !== 'pdf')
 
   // 沉浸模式：鼠标静止自动隐藏
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -593,13 +593,14 @@ export function ReaderPage() {
       ) : mode === 'webtoon' ? (
         <WebtoonViewer
           chapterId={activeId}
+          seriesId={seriesId}
           onPosition={onPosition}
           onNext={goNext}
         />
       ) : (
         // 点击区只翻页不跨话（store 的 next/prev 自带章节内钳位）；
         // 跨话走顶栏按钮、末页卡片或键盘（到末页自动进下一话）
-        <ImageViewer key={`${activeId}-${mode}`} chapterId={activeId} />
+        <ImageViewer key={`${activeId}-${mode}`} chapterId={activeId} seriesId={seriesId} />
       )}
 
       <ReaderChrome

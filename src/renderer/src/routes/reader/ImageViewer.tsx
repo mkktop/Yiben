@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useLayoutEffect, useCallback, useEffect, useRef, useState } from 'react'
 import { RotateCw } from 'lucide-react'
 import { pageUrl } from '@shared/types'
 import { spreadPages, useReaderStore } from '@/stores/reader'
@@ -6,14 +6,28 @@ import { useCurrentPageObserver } from './useCurrentPageObserver'
 
 interface ImageViewerProps {
   chapterId: number
+  /** 缩放按系列持久化需要 */
+  seriesId: number
   /** 条漫模式用于回报当前页；单页/双页模式自行管理页码 */
   onCurrentPage?: (page: number) => void
+  /** 条漫模式回报视口归属话（软切换进度用） */
+  onPosition?: (pos: StripPos) => void
   /** 条漫滚到底部再往下时由外层接管（进下一话） */
   onNext?: () => void
 }
 
 /** 失败重试间隔：1s → 4s（指数退避），共 2 次后转手动重试 */
 const RETRY_DELAYS = [1000, 4000]
+
+/** 缩放按系列写入偏好（尾随防抖：滚轮连续缩放只在停手后落一次盘） */
+let zoomPersistTimer: ReturnType<typeof setTimeout> | null = null
+function persistZoom(seriesId: number, zoom: number): void {
+  if (zoomPersistTimer) clearTimeout(zoomPersistTimer)
+  zoomPersistTimer = setTimeout(() => {
+    zoomPersistTimer = null
+    if (seriesId > 0) void window.yiben.reader.setPrefs(seriesId, { zoom }).catch(() => {})
+  }, 600)
+}
 
 /**
  * 单页图片：加载失败后先静默重试（云端 502/超时多数是瞬时的，换查询串强制重发），
@@ -86,28 +100,45 @@ function PageImage({
 }
 
 /** 单页 / 双页（RTL）模式的图片视口：点击区只在章节内翻页，不跨话 */
-export function ImageViewer({ chapterId }: ImageViewerProps) {
-  const { mode, fit, rtl, rotate, page, pageCount, widePages, spreadOffset, next, prev, setPage } =
+export function ImageViewer({ chapterId, seriesId }: ImageViewerProps) {
+  const { mode, fit, rtl, rotate, page, pageCount, widePages, spreadOffset, zoom, next, prev, setPage } =
     useReaderStore()
-  const [zoom, setZoom] = useState(1)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    setZoom(1)
-  }, [page, mode, fit])
+  const applyZoom = useCallback(
+    (next: number) => {
+      const z = Math.min(4, Math.max(0.5, Math.round(next * 1000) / 1000))
+      const s = useReaderStore.getState()
+      if (z === s.zoom) return
+      s.patch({ zoom: z })
+      persistZoom(seriesId, z)
+    },
+    [seriesId]
+  )
 
-  // Ctrl/⌘ + 滚轮缩放
+  // 缩放跟随翻页/切话保持；只在换适配方式/阅读模式时复位（缩放语义变了）。
+  // 组件因 key 切话重挂载，prevLayout 初值为 null：首挂载不复位，偏好恢复的缩放才能生效
+  const prevLayout = useRef<string | null>(null)
+  useEffect(() => {
+    const key = `${mode}|${fit}`
+    if (prevLayout.current !== null && prevLayout.current !== key) applyZoom(1)
+    prevLayout.current = key
+  }, [mode, fit, applyZoom])
+
+  // Ctrl/⌘ + 滚轮缩放（监听器只挂一次，读 zoomRef 避免闭包过期）
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
     const onWheel = (e: WheelEvent): void => {
       if (!e.ctrlKey && !e.metaKey) return
       e.preventDefault()
-      setZoom((z) => Math.min(4, Math.max(0.5, z + (e.deltaY > 0 ? -0.1 : 0.1))))
+      applyZoom(zoomRef.current + (e.deltaY > 0 ? -0.1 : 0.1))
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [])
+  }, [applyZoom])
 
   const pagesToShow =
     mode === 'double' ? spreadPages(page, pageCount, rtl, widePages, spreadOffset) : [page]
@@ -163,16 +194,16 @@ export function ImageViewer({ chapterId }: ImageViewerProps) {
 
       {/* 悬浮缩放控制（右下，避开顶栏） */}
       <div className="absolute bottom-10 right-4 flex gap-1 rounded-lg bg-black/60 p-1 backdrop-blur">
-        <ZoomBtn label="−" onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))} />
+        <ZoomBtn label="−" onClick={() => applyZoom(zoom - 0.1)} />
         <span className="grid w-12 place-items-center text-xs text-white/90">
           {Math.round(zoom * 100)}%
         </span>
-        <ZoomBtn label="＋" onClick={() => setZoom((z) => Math.min(4, z + 0.1))} />
+        <ZoomBtn label="＋" onClick={() => applyZoom(zoom + 0.1)} />
         <ZoomBtn
           label="⟲"
           onClick={() => {
             setPage(page)
-            setZoom(1)
+            applyZoom(1)
           }}
         />
       </div>
@@ -220,15 +251,70 @@ interface StripPos {
  */
 export function WebtoonViewer({
   chapterId,
+  seriesId,
   onPosition = () => {},
   onNext
-}: {
-  chapterId: number
-  onPosition?: (pos: StripPos) => void
-  onNext?: () => void
-}) {
+}: ImageViewerProps) {
   const storePageCount = useReaderStore((s) => s.pageCount)
+  const zoom = useReaderStore((s) => s.zoom)
   const ref = useRef<HTMLDivElement>(null)
+
+  /** Ctrl+滚轮/触控板捏合缩放（0.5–4x，视口中心锚定）。走宽度级缩放而非 transform：
+   *  放大后图片按新显示尺寸重新解码，细节不糊（transform 只会拉伸已解码位图）。
+   *  缩放值放 store 并按系列持久化：翻页/切话/跨话拼接都保持 */
+  const stripRef = useRef<HTMLDivElement>(null)
+  const pendingAnchor = useRef<{ el: HTMLElement; intra: number; centerX: number; oldW: number } | null>(null)
+
+  /** 缩放前抓锚点：视口中心落在条带的哪个子元素内、相对高度多少、内容 x 坐标多少 */
+  const zoomTo = (next: number): void => {
+    const el = ref.current
+    const strip = stripRef.current
+    if (!el || !strip) return
+    const z = Math.min(4, Math.max(0.5, Math.round(next * 1000) / 1000))
+    const s = useReaderStore.getState()
+    if (z === s.zoom) return
+    const elRect = el.getBoundingClientRect()
+    const stripRect = strip.getBoundingClientRect()
+    const centerX = elRect.left + el.clientWidth / 2 - stripRect.left
+    const centerY = elRect.top + el.clientHeight / 2 - stripRect.top
+    // 找包含视口中线的子元素（找不到就停在条带根部，锚定退化为按比例）
+    let anchor: HTMLElement = strip
+    let intra = 0
+    for (const k of Array.from(strip.children) as HTMLElement[]) {
+      const r = k.getBoundingClientRect()
+      const top = r.top - stripRect.top
+      if (r.height > 0 && centerY >= top && centerY <= top + r.height) {
+        anchor = k
+        intra = (centerY - top) / r.height
+        break
+      }
+    }
+    pendingAnchor.current = { el: anchor, intra, centerX, oldW: strip.offsetWidth }
+    s.patch({ zoom: z })
+    persistZoom(seriesId, z)
+  }
+  const zoomToRef = useRef(zoomTo)
+  zoomToRef.current = zoomTo
+
+  // 缩放后（DOM 已更新、上屏前）把锚点拉回视口中心：
+  // y 用「元素内相对位置」换算——下方未加载的懒加载图高度为 0 不随缩放变，
+  // 按整条带比例换算会漂；x 按条带宽度比例（宽度缩放是均匀的）即可
+  useLayoutEffect(() => {
+    const el = ref.current
+    const strip = stripRef.current
+    const a = pendingAnchor.current
+    if (!el || !strip || !a) return
+    pendingAnchor.current = null
+    if (!a.el.isConnected) return
+    const ratio = a.oldW > 0 ? strip.offsetWidth / a.oldW : 1
+    el.scrollLeft = Math.max(
+      0,
+      Math.min(el.scrollWidth - el.clientWidth, a.centerX * ratio - el.clientWidth / 2)
+    )
+    const stripRect = strip.getBoundingClientRect()
+    const r = a.el.getBoundingClientRect()
+    el.scrollTop = r.top - stripRect.top + a.intra * r.height - el.clientHeight / 2
+  }, [zoom])
 
   /** 拼接进来的后续话；换话（路由变化）时清空重来 */
   const [extras, setExtras] = useState<StripChapter[]>([])
@@ -311,6 +397,13 @@ export function WebtoonViewer({
       atBottom.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 4
     }
     const onWheel = (e: WheelEvent): void => {
+      if (e.ctrlKey) {
+        // Ctrl+滚轮缩放（触控板双指捏合也以 ctrlKey wheel 派发），中心锚定；
+        // 必须 preventDefault，否则 Electron 窗口会做整页缩放
+        e.preventDefault()
+        zoomToRef.current(useReaderStore.getState().zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1))
+        return
+      }
       if (e.deltaY <= 0 || !atBottom.current) return
       e.preventDefault()
       if (noMoreRef.current) {
@@ -328,36 +421,54 @@ export function WebtoonViewer({
   }, [onNext])
 
   return (
-    <div ref={ref} className="h-full overflow-y-auto bg-black">
-      <div className="mx-auto max-w-3xl">
-        {Array.from({ length: baseCount }, (_, p) => (
-          <PageImage
-            key={p}
-            src={pageUrl(chapterId, p)}
-            alt={`第 ${p + 1} 页`}
-            dataPage={p}
-            className="block w-full"
-          />
-        ))}
-        {extras.map((c) => (
-          <Fragment key={c.id}>
-            <div className="my-8 flex items-center gap-3 px-8 text-xs text-white/40">
-              <span className="h-px flex-1 bg-white/10" />
-              下一话 · {c.title}
-              <span className="h-px flex-1 bg-white/10" />
-            </div>
-            {Array.from({ length: c.pageCount }, (_, j) => (
-              <PageImage
-                key={`${c.id}-${j}`}
-                src={pageUrl(c.id, j)}
-                alt={`${c.title} 第 ${j + 1} 页`}
-                dataPage={c.start + j}
-                className="block w-full"
-              />
-            ))}
-          </Fragment>
-        ))}
+    <>
+      <div ref={ref} className="h-full overflow-y-auto bg-black">
+        {/* 缩放即改条带宽度（zoom=1 时等价于原来的 max-w-3xl）；放大超宽时
+            overflow-y-auto 的另一轴按规范计算为 auto，横向滚动自动出现 */}
+        <div
+          ref={stripRef}
+          className="mx-auto"
+          style={{ width: `calc(min(100%, 768px) * ${zoom})`, maxWidth: 'none' }}
+        >
+          {Array.from({ length: baseCount }, (_, p) => (
+            <PageImage
+              key={p}
+              src={pageUrl(chapterId, p)}
+              alt={`第 ${p + 1} 页`}
+              dataPage={p}
+              className="block w-full"
+            />
+          ))}
+          {extras.map((c) => (
+            <Fragment key={c.id}>
+              <div className="my-8 flex items-center gap-3 px-8 text-xs text-white/40">
+                <span className="h-px flex-1 bg-white/10" />
+                下一话 · {c.title}
+                <span className="h-px flex-1 bg-white/10" />
+              </div>
+              {Array.from({ length: c.pageCount }, (_, j) => (
+                <PageImage
+                  key={`${c.id}-${j}`}
+                  src={pageUrl(c.id, j)}
+                  alt={`${c.title} 第 ${j + 1} 页`}
+                  dataPage={c.start + j}
+                  className="block w-full"
+                />
+              ))}
+            </Fragment>
+          ))}
+        </div>
       </div>
-    </div>
+
+      {/* 悬浮缩放控制（右下，与单双页模式一致；⟲ 复位缩放） */}
+      <div className="absolute bottom-10 right-4 flex gap-1 rounded-lg bg-black/60 p-1 backdrop-blur">
+        <ZoomBtn label="−" onClick={() => zoomTo(zoom - 0.1)} />
+        <span className="grid w-12 place-items-center text-xs text-white/90">
+          {Math.round(zoom * 100)}%
+        </span>
+        <ZoomBtn label="＋" onClick={() => zoomTo(zoom + 0.1)} />
+        <ZoomBtn label="⟲" onClick={() => zoomTo(1)} />
+      </div>
+    </>
   )
 }
