@@ -5,7 +5,7 @@
 :root {
   --radius: 0.625rem;
 
-  /* 暖纸色 · 浅色主题 */
+  /* ============ 主题：纸墨书斋 · 浅色（暖纸 + 朱砂，默认） ============ */
   --background: oklch(0.985 0.002 85);
   --foreground: oklch(0.245 0.008 60);
   --card: oklch(0.995 0.002 85);
@@ -51,98 +51,12 @@
     0 12px 24px -6px oklch(0.25 0.01 60 / 0.1), 0 4px 8px -4px oklch(0.25 0.01 60 / 0.06);
 }
 
+/* ============ 主题：现代漫画 · 深色「霓虹漫展」（data-theme="comic"） ============ */
+
 .dark {
-  /* 墨色 · 深色主题（默认） */
-  --background: oklch(0.16 0.004 70);
-  --foreground: oklch(0.92 0.005 80);
-  --card: oklch(0.2 0.005 70);
-  --card-foreground: oklch(0.92 0.005 80);
-  --popover: oklch(0.21 0.005 70);
-  --popover-foreground: oklch(0.92 0.005 80);
-  --primary: oklch(0.66 0.19 33);
-  --primary-foreground: oklch(0.98 0.01 80);
-  --secondary: oklch(0.25 0.006 70);
-  --secondary-foreground: oklch(0.92 0.005 80);
-  --muted: oklch(0.25 0.006 70);
-  --muted-foreground: oklch(0.72 0.008 75);
-  --accent: oklch(0.27 0.012 60);
-  --accent-foreground: oklch(0.92 0.005 80);
-  --destructive: oklch(0.65 0.2 25);
-  --destructive-foreground: oklch(0.98 0.01 80);
-  --warning: oklch(0.79 0.14 78);
-  --warning-foreground: oklch(0.28 0.06 70);
-  --border: oklch(0.27 0.006 70);
-  --input: oklch(0.27 0.006 70);
-  --ring: oklch(0.6 0.16 33);
-  --sidebar: oklch(0.185 0.004 70);
-  --sidebar-foreground: oklch(0.92 0.005 80);
-  --sidebar-primary: oklch(0.66 0.19 33);
-  --sidebar-primary-foreground: oklch(0.98 0.01 80);
-  --sidebar-accent: oklch(0.25 0.008 70);
-  --sidebar-accent-foreground: oklch(0.92 0.005 80);
-  --sidebar-border: oklch(0.25 0.006 70);
-  --sidebar-ring: oklch(0.6 0.16 33);
-
-  /* 页面顶部氛围光 · 深色偏琥珀 */
-  --ambient: oklch(0.34 0.06 70);
-  /* 无封面占位底色 · 比 --muted 略暖 */
-  --cover-placeholder: oklch(0.27 0.012 60);
-
-  /* 阴影 · 深色更重更柔 */
-  --elevation-xs: 0 1px 3px 0 oklch(0 0 0 / 0.35);
-  --elevation-sm: 0 2px 5px -1px oklch(0 0 0 / 0.4), 0 1px 2px -1px oklch(0 0 0 / 0.3);
-  --elevation-md: 0 6px 14px -3px oklch(0 0 0 / 0.45), 0 3px 6px -3px oklch(0 0 0 / 0.35);
-  --elevation-lg: 0 16px 32px -8px oklch(0 0 0 / 0.55), 0 6px 12px -6px oklch(0 0 0 / 0.4);
-}
-
-/* ============ 主题风格：现代漫画（data-theme="comic"） ============ */
-
-/* 漫画 · 浅色「杂志白昼」：亮纸白 + 油墨蓝黑 + 钴蓝主色 + 明黄氛围 */
-:root[data-theme='comic'] {
+  /* 墨蓝黑 + 信号黄主色 + 霓虹青氛围；--radius 收紧出印刷感 */
   --radius: 0.45rem;
 
-  --background: oklch(0.985 0.005 95);
-  --foreground: oklch(0.22 0.03 265);
-  --card: oklch(0.995 0.003 95);
-  --card-foreground: oklch(0.22 0.03 265);
-  --popover: oklch(0.995 0.003 95);
-  --popover-foreground: oklch(0.22 0.03 265);
-  --primary: oklch(0.5 0.19 262);
-  --primary-foreground: oklch(0.98 0.01 95);
-  --secondary: oklch(0.94 0.015 260);
-  --secondary-foreground: oklch(0.28 0.03 265);
-  --muted: oklch(0.94 0.015 260);
-  --muted-foreground: oklch(0.5 0.03 265);
-  --accent: oklch(0.92 0.09 95);
-  --accent-foreground: oklch(0.3 0.04 95);
-  --destructive: oklch(0.56 0.22 27);
-  --destructive-foreground: oklch(0.98 0.01 95);
-  --warning: oklch(0.7 0.15 75);
-  --warning-foreground: oklch(0.98 0.01 95);
-  --border: oklch(0.85 0.02 260);
-  --input: oklch(0.85 0.02 260);
-  --ring: oklch(0.6 0.16 262);
-  --sidebar: oklch(0.965 0.008 260);
-  --sidebar-foreground: oklch(0.22 0.03 265);
-  --sidebar-primary: oklch(0.5 0.19 262);
-  --sidebar-primary-foreground: oklch(0.98 0.01 95);
-  --sidebar-accent: oklch(0.93 0.02 260);
-  --sidebar-accent-foreground: oklch(0.28 0.03 265);
-  --sidebar-border: oklch(0.87 0.02 260);
-  --sidebar-ring: oklch(0.6 0.16 262);
-
-  --ambient: oklch(0.88 0.13 95);
-  --cover-placeholder: oklch(0.94 0.03 95);
-
-  /* 漫画招牌：实心偏移墨影（印刷套准感） */
-  --elevation-xs: 1px 1px 0 0 oklch(0.22 0.03 265 / 0.45);
-  --elevation-sm: 2px 2px 0 0 oklch(0.22 0.03 265 / 0.4);
-  --elevation-md: 3px 3px 0 0 oklch(0.22 0.03 265 / 0.35);
-  --elevation-lg: 6px 6px 0 0 oklch(0.22 0.03 265 / 0.3);
-}
-
-/* 漫画 · 深色「霓虹漫展」：墨蓝黑 + 信号黄主色 + 霓虹青氛围 */
-:root[data-theme='comic'].dark {
   --background: oklch(0.17 0.025 265);
   --foreground: oklch(0.95 0.012 95);
   --card: oklch(0.21 0.025 265);
@@ -176,6 +90,7 @@
   --ambient: oklch(0.5 0.1 220);
   --cover-placeholder: oklch(0.27 0.03 265);
 
+  /* 漫画招牌：实心偏移墨影（印刷套准感） */
   --elevation-xs: 1px 1px 0 0 oklch(0 0 0 / 0.6);
   --elevation-sm: 2px 2px 0 0 oklch(0 0 0 / 0.55);
   --elevation-md: 3px 3px 0 0 oklch(0 0 0 / 0.5);

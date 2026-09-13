@@ -18,7 +18,7 @@ const navItems = [
 ]
 
 export function AppShell() {
-  const { mode, toggle } = useThemeStore()
+  const { theme, toggle } = useThemeStore()
   const { query, setQuery } = useDataStore()
   const navigate = useNavigate()
   const location = useLocation()
@@ -140,7 +140,7 @@ export function AppShell() {
               title="切换主题"
               className="mr-1 rounded-full text-muted-foreground hover:text-foreground"
             >
-              {mode === 'dark' ? <Sun className="size-5" /> : <Moon className="size-5" />}
+              {theme === 'comic' ? <Sun className="size-5" /> : <Moon className="size-5" />}
             </Button>
             <WindowControls />
           </div>

@@ -742,7 +742,7 @@ function DiagnoseSection() {
 }
 
 export function SettingsPage() {
-  const { mode, setMode, preset, setPreset } = useThemeStore()
+  const { theme, setTheme } = useThemeStore()
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-6 p-8">
@@ -754,67 +754,43 @@ export function SettingsPage() {
         <CardHeader title="外观" />
         <CardBody className="space-y-6">
           <div>
-            <p className="mb-3 text-sm font-medium">主题风格</p>
+            <p className="mb-3 text-sm font-medium">主题</p>
             <div className="grid grid-cols-2 gap-4">
               {(
                 [
                   {
                     key: 'paper',
-                    label: '纸墨书斋',
+                    label: '纸墨书斋 · 浅色',
                     desc: '暖纸 · 朱砂 · 书房雅气',
-                    // 预览色条与 index.css 令牌对应：朱砂 / 暖纸 / 墨色
-                    swatches: ['oklch(0.55 0.19 32)', 'oklch(0.985 0.002 85)', 'oklch(0.16 0.004 70)']
+                    // 预览色条与 index.css 令牌对应：朱砂 / 暖纸 / 墨字
+                    swatches: ['oklch(0.55 0.19 32)', 'oklch(0.985 0.002 85)', 'oklch(0.245 0.008 60)']
                   },
                   {
                     key: 'comic',
-                    label: '现代漫画',
-                    desc: '油墨 · 钴蓝/信号黄 · 网点纹理',
-                    // 预览色条：钴蓝 / 信号黄 / 墨蓝黑
-                    swatches: ['oklch(0.5 0.19 262)', 'oklch(0.86 0.15 95)', 'oklch(0.17 0.025 265)']
+                    label: '现代漫画 · 深色',
+                    desc: '油墨 · 信号黄 · 网点纹理',
+                    // 预览色条：信号黄 / 墨蓝黑 / 浅字
+                    swatches: ['oklch(0.86 0.15 95)', 'oklch(0.17 0.025 265)', 'oklch(0.95 0.012 95)']
                   }
                 ] as const
-              ).map((p) => (
+              ).map((t) => (
                 <button
-                  key={p.key}
-                  onClick={() => setPreset(p.key)}
+                  key={t.key}
+                  onClick={() => setTheme(t.key)}
                   className={cn(
                     'rounded-xl border-2 p-4 text-left transition-colors',
-                    preset === p.key
+                    theme === t.key
                       ? 'border-primary bg-primary/5'
                       : 'border-border hover:border-ring/50'
                   )}
                 >
                   <div className="mb-3 flex h-8 overflow-hidden rounded-lg border">
-                    {p.swatches.map((c) => (
+                    {t.swatches.map((c) => (
                       <span key={c} className="h-full flex-1" style={{ background: c }} />
                     ))}
                   </div>
-                  <span className="text-sm font-medium">{p.label}</span>
-                  <p className="mt-0.5 text-xs text-muted-foreground">{p.desc}</p>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <p className="mb-3 text-sm font-medium">颜色模式</p>
-            <div className="grid grid-cols-2 gap-4">
-              {(['dark', 'light'] as const).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setMode(m)}
-                  className={cn(
-                    'rounded-xl border-2 p-4 text-left transition-colors',
-                    mode === m ? 'border-primary bg-primary/5' : 'border-border hover:border-ring/50'
-                  )}
-                >
-                  <div
-                    className={cn(
-                      'mb-3 h-16 rounded-lg border',
-                      m === 'dark' ? 'bg-zinc-900' : 'bg-orange-50'
-                    )}
-                  />
-                  <span className="text-sm font-medium">{m === 'dark' ? '深色' : '浅色'}</span>
+                  <span className="text-sm font-medium">{t.label}</span>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{t.desc}</p>
                 </button>
               ))}
             </div>

@@ -77,7 +77,7 @@ function bootstrap(): void {
   })
 }
 
-// 开发验证用：YIBEN_SCREENSHOT=<png路径>，可选 YIBEN_ROUTE=<hash路由> / YIBEN_THEME=light
+// 开发验证用：YIBEN_SCREENSHOT=<png路径>，可选 YIBEN_ROUTE=<hash路由> / YIBEN_THEME=paper|comic（兼容旧值 light）
 // is.dev 门控：这些钩子允许向渲染进程注入任意 JS，不能跟着编译进生产包
 async function debugScreenshot(win: BrowserWindow): Promise<void> {
   if (!is.dev) return
@@ -87,9 +87,11 @@ async function debugScreenshot(win: BrowserWindow): Promise<void> {
     if (level >= 2) console.log('[renderer]', level, message)
   })
   const theme = process.env['YIBEN_THEME']
-  if (theme === 'light') {
+  const themeName = theme === 'comic' || theme === 'dark' ? 'comic' : theme ? 'paper' : undefined
+  if (themeName) {
     await win.webContents.executeJavaScript(
-      `document.documentElement.classList.remove('dark')`
+      `document.documentElement.dataset.theme = '${themeName}';
+       document.documentElement.classList.toggle('dark', ${themeName === 'comic'})`
     )
     await new Promise((r) => setTimeout(r, 400))
   }
