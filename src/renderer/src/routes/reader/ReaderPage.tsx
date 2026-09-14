@@ -5,7 +5,13 @@ import { usePagePreload } from './usePagePreload'
 import { ImageViewer, WebtoonViewer } from './ImageViewer'
 import { PdfViewer } from './PdfViewer'
 import { ReaderChrome } from './ReaderChrome'
-import { useReaderStore, atLastScreen, resumeStartPage, type ReaderMode } from '@/stores/reader'
+import {
+  useReaderStore,
+  atLastScreen,
+  patchReaderPrefs,
+  resumeStartPage,
+  type ReaderMode
+} from '@/stores/reader'
 import { useDataStore } from '@/stores/data'
 import { pageUrl, type BookmarkInfo, type ReaderChapterInfo } from '@shared/types'
 
@@ -294,6 +300,16 @@ export function ReaderPage() {
   /** 跳页：同话直接定位（条漫滚动），跨话经深链进对应章节 */
   const jumpTo = useCallback(
     (targetChapterId: number, page0: number) => {
+      // 目标是路由话而当前归属在拼接话：同一路由仅 search 变化不会重挂组件，
+      // ?p= 深链形同空操作——就地清掉软切换滚回路由话
+      if (targetChapterId === activeId && embeddedRef.current) {
+        flush()
+        setEmbedded(null)
+        useReaderStore.setState({ pageCount: chapter?.page_count ?? 0 })
+        useReaderStore.getState().setPage(page0)
+        if (useReaderStore.getState().mode === 'webtoon') scrollStripTo(page0, true)
+        return
+      }
       if (targetChapterId !== positionId) {
         flush()
         navigate(`/reader/${targetChapterId}?p=${page0 + 1}`)
@@ -308,7 +324,7 @@ export function ReaderPage() {
           ?.scrollIntoView({ block: 'start' })
       }
     },
-    [positionId, navigate, scrollStripTo]
+    [activeId, positionId, chapter, navigate, scrollStripTo, flush]
   )
 
   // ---------- 进度 ----------
@@ -411,10 +427,8 @@ export function ReaderPage() {
 
   const onModeChange = useCallback(
     (mode: ReaderMode): void => {
-      useReaderStore.getState().patch({ mode })
-      if (chapter) {
-        void window.yiben.reader.setPrefs(chapter.series_id, { mode }).catch(() => {})
-      }
+      if (chapter) patchReaderPrefs(chapter.series_id, { mode })
+      else useReaderStore.getState().patch({ mode })
     },
     [chapter]
   )
@@ -495,10 +509,8 @@ export function ReaderPage() {
         case 'd':
         case 'D':
           // 顶栏按钮/帮助面板均标注 D 为方向切换（此前误绑成单双页切换）
-          s.patch({ rtl: !s.rtl })
-          if (chapter) {
-            void window.yiben.reader.setPrefs(chapter.series_id, { rtl: !s.rtl }).catch(() => {})
-          }
+          if (chapter) patchReaderPrefs(chapter.series_id, { rtl: !s.rtl })
+          else s.patch({ rtl: !s.rtl })
           break
         case 'c':
         case 'C':
@@ -511,15 +523,20 @@ export function ReaderPage() {
           break
         }
         case 's':
-        case 'S':
-          s.patch({
-            fit: s.fit === 'width' ? 'height' : s.fit === 'height' ? 'original' : 'width'
-          })
+        case 'S': {
+          const nextFit =
+            s.fit === 'width' ? 'height' : s.fit === 'height' ? 'original' : 'width'
+          if (chapter) patchReaderPrefs(chapter.series_id, { fit: nextFit })
+          else s.patch({ fit: nextFit })
           break
+        }
         case 'r':
-        case 'R':
-          s.patch({ rotate: ((s.rotate + 90) % 360) as number })
+        case 'R': {
+          const nextRotate = ((s.rotate + 90) % 360) as number
+          if (chapter) patchReaderPrefs(chapter.series_id, { rotate: nextRotate })
+          else s.patch({ rotate: nextRotate })
           break
+        }
         case 't':
         case 'T':
           s.toggleThumbs()
@@ -591,9 +608,13 @@ export function ReaderPage() {
           onCurrentPage={(p) => setPage(p)}
         />
       ) : mode === 'webtoon' ? (
+        // key=activeId：切话强制重挂。否则路由参数变化时组件实例保留，
+        // 条带按旧话冻结页数渲染新话 URL（破图闪烁），scrollTop 也只靠内容塌缩偶然钳位
         <WebtoonViewer
+          key={activeId}
           chapterId={activeId}
           seriesId={seriesId}
+          initialPage={startPage}
           onPosition={onPosition}
           onNext={goNext}
         />
@@ -605,6 +626,7 @@ export function ReaderPage() {
 
       <ReaderChrome
         chapterId={activeId}
+        seriesId={seriesId}
         seriesTitle={chapter.series_title}
         chapterTitle={chapter.title}
         canThumbnail={chapter.kind !== 'pdf'}
@@ -613,7 +635,8 @@ export function ReaderPage() {
         onModeChange={onModeChange}
         onNextChapter={goNextChapter}
         onPrevChapter={goPrevChapter}
-        neighbors={neighbors}        bookmarks={bookmarks}
+        neighbors={neighbors}
+        bookmarks={bookmarks}
         isBookmarked={isBookmarked}
         onToggleBookmark={toggleBookmark}
         onJump={jumpTo}

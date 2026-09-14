@@ -10,6 +10,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { useAsync } from '@/hooks/useAsync'
+import { useDebounced } from '@/hooks/useDebounced'
 import { useDataStore } from '@/stores/data'
 import { CoverGrid, EmptyHint } from '@/components/library/CoverGrid'
 import { errorMessage } from '@/lib/utils'
@@ -138,6 +139,8 @@ export function LibraryPage() {
   const version = useDataStore((s) => s.version)
   const bump = useDataStore((s) => s.bump)
   const query = useDataStore((s) => s.query)
+  // 搜索防抖：每键一次 series.list IPC 会反复序列化数千条；输入框保持即时回显
+  const debouncedQuery = useDebounced(query, 200)
   const [filter, setFilter] = useState<SeriesFilter>('all')
   /** 虚拟书架筛选；null = 全部 */
   const [shelfId, setShelfId] = useState<number | null>(null)
@@ -157,13 +160,13 @@ export function LibraryPage() {
   const { data: series, error: seriesError } = useAsync<Series[]>(
     () =>
       window.yiben.series.list({
-        query: query.trim() || undefined,
+        query: debouncedQuery.trim() || undefined,
         filter,
         shelfId: shelfId ?? undefined,
         // 多取一条用来判断是否被截断
         limit: MAX_SERIES + 1
       }),
-    [version, query, filter, shelfId]
+    [version, debouncedQuery, filter, shelfId]
   )
 
   const truncated = (series?.length ?? 0) > MAX_SERIES

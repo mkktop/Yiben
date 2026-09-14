@@ -196,10 +196,18 @@ function migrate(db: Database.Database): void {
 
   // 云盘字段（渐进迁移）
   const tryAlter = (sql: string): void => {
+    // 先查表结构：裸 catch 会把磁盘满/库被锁等真实错误也当成「列已存在」吞掉，
+    // 迁移静默缺失后第一笔查询才以更晦涩的 no such column 失败
+    const m = sql.match(/^ALTER TABLE (\w+) ADD COLUMN (\w+)/i)
+    if (m) {
+      const cols = db.prepare(`PRAGMA table_info(${m[1]})`).all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === m[2])) return
+    }
     try {
       db.exec(sql)
-    } catch {
-      /* 列已存在 */
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!/duplicate column name/i.test(msg)) throw err
     }
   }
   tryAlter('ALTER TABLE libraries ADD COLUMN cloud_folder_id TEXT')
@@ -797,6 +805,15 @@ function localDay(d: Date = new Date()): string {
   return d.toLocaleDateString('sv')
 }
 
+/** 重扫中章节行被级联删除时，进度写入会撞 FK——该进度已无意义，静默跳过 */
+function isFkError(err: unknown): boolean {
+  const e = err as { code?: string; message?: string }
+  return (
+    e?.code === 'SQLITE_CONSTRAINT_FOREIGNKEY' ||
+    /FOREIGN KEY constraint failed/i.test(e?.message ?? '')
+  )
+}
+
 export function saveProgress(chapterId: number, page: number, completed: boolean): void {
   // 翻页即触发（节流后仍然高频）：语句只编译一次
   saveProgressStmt ??= db.prepare(
@@ -813,7 +830,12 @@ export function saveProgress(chapterId: number, page: number, completed: boolean
   // 首次记录该话：读到第 page 页（0 基）意味着看了 page+1 页
   const delta = old ? page - old.page : page + 1
 
-  saveProgressStmt.run(chapterId, page, completed ? 1 : 0, Date.now())
+  try {
+    saveProgressStmt.run(chapterId, page, completed ? 1 : 0, Date.now())
+  } catch (err) {
+    if (isFkError(err)) return
+    throw err
+  }
 
   if (delta > 0) {
     chapterSeriesStmt ??= db.prepare('SELECT series_id FROM chapters WHERE id = ?')
@@ -822,7 +844,11 @@ export function saveProgress(chapterId: number, page: number, completed: boolean
     )
     const ch = chapterSeriesStmt.get(chapterId) as { series_id: number } | undefined
     // ms（阅读时长）暂不采集，留 0 给未来埋点
-    logInsertStmt.run(chapterId, ch?.series_id ?? 0, localDay(), delta, 0, Date.now())
+    try {
+      logInsertStmt.run(chapterId, ch?.series_id ?? 0, localDay(), delta, 0, Date.now())
+    } catch (err) {
+      if (!isFkError(err)) throw err
+    }
   }
 }
 

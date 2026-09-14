@@ -1,11 +1,17 @@
 import { readFile } from 'fs/promises'
 import { protocol } from 'electron'
 import { coverChapterFor, getChapter, getChapterSource } from './db'
-import { getDriver, UnsupportedFormatError } from './archives'
+import { getDriver, MAX_ARCHIVE_ENTRY_BYTES, UnsupportedFormatError } from './archives'
 import { longPath, mimeOfImage } from './util/paths'
 import { thumbPath, generateCloudCover } from './thumbnail'
 import { buildPageThumb, pageThumbPath } from './pageThumb'
 import { ensureChapterPage, ensureLocalChapterPath, readEnsuredPage } from './cloud189/ensure'
+
+/**
+ * 协议响应 CSP：内容只作为图片/文件消费，禁止一切脚本执行——
+ * 恶意归档里的 SVG 等活动内容即使被顶层导航加载也无法在特权 origin 跑脚本
+ */
+const CSP = "default-src 'none'; style-src 'unsafe-inline'"
 
 /**
  * yiben:// 自定义协议：
@@ -64,6 +70,10 @@ async function readChapterPage(
 
   const driver = await getDriver(chapter.path, chapter.kind === 'folder')
   const buf = await driver.readPage(index)
+  // 解压上限的最终防线：各驱动已按声明尺寸拦截，这里兜住谎报尺寸的实际产出
+  if (buf.length > MAX_ARCHIVE_ENTRY_BYTES) {
+    throw new HttpError(415, `页面过大（${buf.length} 字节）`)
+  }
   const pages = await driver.listPages()
   return { buf, name: pages[index]?.name ?? 'page.jpg' }
 }
@@ -82,7 +92,11 @@ export function attachProtocolHandlers(): void {
         try {
           const buf = await readFile(longPath(file))
           return new Response(new Uint8Array(buf), {
-            headers: { 'content-type': 'image/webp', 'cache-control': 'max-age=3600' }
+            headers: {
+              'content-type': 'image/webp',
+              'cache-control': 'max-age=3600',
+              'content-security-policy': CSP
+            }
           })
         } catch {
           // 本地无缩略图：云端系列按需下载首页生成
@@ -94,7 +108,11 @@ export function attachProtocolHandlers(): void {
           const buf = await readFile(longPath(file)).catch(() => null)
           if (!buf) return new Response('cover not ready', { status: 503 })
           return new Response(new Uint8Array(buf), {
-            headers: { 'content-type': 'image/webp', 'cache-control': 'max-age=3600' }
+            headers: {
+              'content-type': 'image/webp',
+              'cache-control': 'max-age=3600',
+              'content-security-policy': CSP
+            }
           })
         }
       }
@@ -104,7 +122,8 @@ export function attachProtocolHandlers(): void {
         return new Response(new Uint8Array(buf), {
           headers: {
             'content-type': mimeOfImage(name),
-            'cache-control': 'max-age=86400'
+            'cache-control': 'max-age=86400',
+            'content-security-policy': CSP
           }
         })
       }
@@ -121,7 +140,11 @@ export function attachProtocolHandlers(): void {
           buf = await readFile(longPath(file))
         }
         return new Response(new Uint8Array(buf), {
-          headers: { 'content-type': 'image/webp', 'cache-control': 'max-age=86400' }
+          headers: {
+            'content-type': 'image/webp',
+            'cache-control': 'max-age=86400',
+            'content-security-policy': CSP
+          }
         })
       }
 
@@ -138,7 +161,8 @@ export function attachProtocolHandlers(): void {
         return new Response(new Uint8Array(buf), {
           headers: {
             'content-type': chapter.kind === 'pdf' ? 'application/pdf' : 'application/octet-stream',
-            'cache-control': 'max-age=86400'
+            'cache-control': 'max-age=86400',
+            'content-security-policy': CSP
           }
         })
       }

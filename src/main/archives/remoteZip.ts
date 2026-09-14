@@ -1,5 +1,7 @@
-import { inflateRawSync } from 'node:zlib'
+import { inflateRaw } from 'node:zlib'
+import { promisify } from 'node:util'
 import { isImageFile, naturalCompare } from '../util/paths'
+import { MAX_ARCHIVE_ENTRY_BYTES } from './types'
 import type { PageEntry } from './types'
 
 const EOCD_SIG = 0x06054b50
@@ -8,14 +10,39 @@ const EOCD64_SIG = 0x06064b50
 const CD_SIG = 0x02014b50
 const LFH_SIG = 0x04034b50
 
+/** 异步 inflate 跑在 libuv 线程池：大条目解压不再冻结主进程（窗口/IPC 停摆数秒） */
+const inflateRawAsync = promisify(inflateRaw)
+
 /** EOCD 最长 65557 字节（注释上限），一次拉尾部足够 */
 const TAIL_BYTES = 66_000
 
 /**
  * 单条目解压上限：云端文件是不可信输入，高压缩比的 zip bomb
- * 可在 inflateRawSync 里膨胀到 GB 级把主进程打爆（OOM 后无法靠刷新恢复）。
+ * 可在 inflate 里膨胀到 GB 级把主进程打爆（OOM 后无法靠刷新恢复）。
  */
-const MAX_ENTRY_BYTES = 200 * 1024 * 1024
+const MAX_ENTRY_BYTES = MAX_ARCHIVE_ENTRY_BYTES
+
+/**
+ * 解压并发上限：条漫可视区 + 双页 + 缩略图条会并发打到不同页，
+ * 每个请求最高可膨胀 200MB，不限并发时瞬时解压缓冲可达 GB 级。
+ */
+const MAX_CONCURRENT_ENTRIES = 3
+
+let entrySlots = 0
+const entryQueue: Array<() => void> = []
+
+async function withEntrySlot<T>(fn: () => Promise<T>): Promise<T> {
+  while (entrySlots >= MAX_CONCURRENT_ENTRIES) {
+    await new Promise<void>((r) => entryQueue.push(r))
+  }
+  entrySlots++
+  try {
+    return await fn()
+  } finally {
+    entrySlots--
+    entryQueue.shift()?.()
+  }
+}
 
 /** 单次 Range 读的空闲超时：直链挂起时不能无限占用（同 cache.ts 的看门狗语义） */
 const RANGE_IDLE_TIMEOUT_MS = 30_000
@@ -173,32 +200,34 @@ export class RemoteZip {
   }
 
   private async readEntry(entry: RemoteEntry): Promise<Buffer> {
-    // 声明尺寸超限的条目直接拒绝（zip bomb 防线第一道）
-    if (entry.size > MAX_ENTRY_BYTES) {
-      throw new Error(`条目过大（${entry.size} 字节）：${entry.name}`)
-    }
-    if (entry.localOffset + 30 > this.size) {
-      throw new Error(`条目偏移越界：${entry.name}`)
-    }
-    // 本地文件头：名字长度在 +26，扩展长度在 +28（本地扩展与中央目录的可能不同）
-    const lfh = await this.fetchRange(entry.localOffset, entry.localOffset + 29)
-    if (lfh.readUInt32LE(0) !== LFH_SIG) throw new Error(`本地头魔数不符：${entry.name}`)
-    // 零长条目（目录占位/损坏记录）没有数据段，直接返回空 Buffer，
-    // 否则起止颠倒的 Range 请求（end = start - 1）会被服务器拒绝
-    if (entry.compressedSize === 0) return Buffer.alloc(0)
-    const dataStart = entry.localOffset + 30 + lfh.readUInt16LE(26) + lfh.readUInt16LE(28)
-    const raw = await this.fetchRange(dataStart, dataStart + entry.compressedSize - 1)
-    if (entry.method === 0) {
-      if (raw.length !== entry.size) throw new Error(`条目长度不符：${entry.name}`)
-      return raw
-    }
-    if (entry.method === 8) {
-      // maxOutputLength 是第二道防线：中央目录谎报 size 时解压到上限即抛错
-      const out = inflateRawSync(raw, { maxOutputLength: MAX_ENTRY_BYTES })
-      if (out.length !== entry.size) throw new Error(`条目长度不符：${entry.name}`)
-      return out
-    }
-    throw new Error(`不支持的压缩方法 ${entry.method}：${entry.name}`)
+    return withEntrySlot(async () => {
+      // 声明尺寸超限的条目直接拒绝（zip bomb 防线第一道）
+      if (entry.size > MAX_ENTRY_BYTES) {
+        throw new Error(`条目过大（${entry.size} 字节）：${entry.name}`)
+      }
+      if (entry.localOffset + 30 > this.size) {
+        throw new Error(`条目偏移越界：${entry.name}`)
+      }
+      // 本地文件头：名字长度在 +26，扩展长度在 +28（本地扩展与中央目录的可能不同）
+      const lfh = await this.fetchRange(entry.localOffset, entry.localOffset + 29)
+      if (lfh.readUInt32LE(0) !== LFH_SIG) throw new Error(`本地头魔数不符：${entry.name}`)
+      // 零长条目（目录占位/损坏记录）没有数据段，直接返回空 Buffer，
+      // 否则起止颠倒的 Range 请求（end = start - 1）会被服务器拒绝
+      if (entry.compressedSize === 0) return Buffer.alloc(0)
+      const dataStart = entry.localOffset + 30 + lfh.readUInt16LE(26) + lfh.readUInt16LE(28)
+      const raw = await this.fetchRange(dataStart, dataStart + entry.compressedSize - 1)
+      if (entry.method === 0) {
+        if (raw.length !== entry.size) throw new Error(`条目长度不符：${entry.name}`)
+        return raw
+      }
+      if (entry.method === 8) {
+        // maxOutputLength 是第二道防线：中央目录谎报 size 时解压到上限即抛错
+        const out = await inflateRawAsync(raw, { maxOutputLength: MAX_ENTRY_BYTES })
+        if (out.length !== entry.size) throw new Error(`条目长度不符：${entry.name}`)
+        return out
+      }
+      throw new Error(`不支持的压缩方法 ${entry.method}：${entry.name}`)
+    })
   }
 
   async close(): Promise<void> {}

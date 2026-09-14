@@ -1,4 +1,4 @@
-import { Fragment, useLayoutEffect, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, memo, useLayoutEffect, useCallback, useEffect, useRef, useState } from 'react'
 import { RotateCw } from 'lucide-react'
 import { pageUrl } from '@shared/types'
 import { spreadPages, useReaderStore } from '@/stores/reader'
@@ -8,6 +8,8 @@ interface ImageViewerProps {
   chapterId: number
   /** 缩放按系列持久化需要 */
   seriesId: number
+  /** 条漫模式：恢复/深链起始页（0 基）；单双页模式由 store 管理 */
+  initialPage?: number
   /** 条漫模式用于回报当前页；单页/双页模式自行管理页码 */
   onCurrentPage?: (page: number) => void
   /** 条漫模式回报视口归属话（软切换进度用） */
@@ -100,9 +102,20 @@ function PageImage({
 }
 
 /** 单页 / 双页（RTL）模式的图片视口：点击区只在章节内翻页，不跨话 */
-export function ImageViewer({ chapterId, seriesId }: ImageViewerProps) {
-  const { mode, fit, rtl, rotate, page, pageCount, widePages, spreadOffset, zoom, next, prev, setPage } =
-    useReaderStore()
+export const ImageViewer = memo(function ImageViewer({ chapterId, seriesId }: ImageViewerProps) {
+  // 选择器订阅：整库解构会让无关状态（immersive/thumbs 等）变化时也整树 reconcile
+  const mode = useReaderStore((s) => s.mode)
+  const fit = useReaderStore((s) => s.fit)
+  const rtl = useReaderStore((s) => s.rtl)
+  const rotate = useReaderStore((s) => s.rotate)
+  const page = useReaderStore((s) => s.page)
+  const pageCount = useReaderStore((s) => s.pageCount)
+  const widePages = useReaderStore((s) => s.widePages)
+  const spreadOffset = useReaderStore((s) => s.spreadOffset)
+  const zoom = useReaderStore((s) => s.zoom)
+  const next = useReaderStore((s) => s.next)
+  const prev = useReaderStore((s) => s.prev)
+  const setPage = useReaderStore((s) => s.setPage)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const applyZoom = useCallback(
@@ -209,7 +222,7 @@ export function ImageViewer({ chapterId, seriesId }: ImageViewerProps) {
       </div>
     </div>
   )
-}
+})
 
 function ZoomBtn({ label, onClick }: { label: string; onClick: () => void }) {
   return (
@@ -248,10 +261,12 @@ interface StripPos {
  * 临近本话末尾（差 2 页）自动经 neighbors 拼接下一话到同一条带里，滚动不中断、
  * 可跨多话链式拼接；视口跨过分界时回报新的章节归属，外层据此软切换进度话。
  * data-page 用条带全局页号（观察者跨话取「最小跨越页」需要单调序）。
+ * 切话由外层 key=chapterId 强制重挂（实例不保留，extras/scrollTop 全新开始）。
  */
-export function WebtoonViewer({
+export const WebtoonViewer = memo(function WebtoonViewer({
   chapterId,
   seriesId,
+  initialPage = 0,
   onPosition = () => {},
   onNext
 }: ImageViewerProps) {
@@ -316,7 +331,7 @@ export function WebtoonViewer({
     el.scrollTop = r.top - stripRect.top + a.intra * r.height - el.clientHeight / 2
   }, [zoom])
 
-  /** 拼接进来的后续话；换话（路由变化）时清空重来 */
+  /** 拼接进来的后续话（key 重挂后必为空起步） */
   const [extras, setExtras] = useState<StripChapter[]>([])
   const [fetching, setFetching] = useState(false)
   const extrasRef = useRef(extras)
@@ -328,11 +343,6 @@ export function WebtoonViewer({
   const baseRef = useRef(storePageCount)
   if (extras.length === 0) baseRef.current = storePageCount
   const baseCount = extras.length > 0 ? baseRef.current : storePageCount
-
-  useEffect(() => {
-    setExtras([])
-    noMoreRef.current = false
-  }, [chapterId])
 
   const tail = extras.length > 0 ? extras[extras.length - 1] : null
   const tailId = tail ? tail.id : chapterId
@@ -379,13 +389,57 @@ export function WebtoonViewer({
     return { chapterId, title: '', page: global, pageCount: baseCount, start: 0 }
   }
 
+  // 初始定位完成前不回报位置：懒加载图高度为 0 时视口中线会先命中第 0 页，
+  // 把恢复页覆盖成 0 还节流落库（这正是条漫进度回退 bug 的根因）
+  const readyForReport = useRef(initialPage <= 0)
+
   useCurrentPageObserver(ref, (global) => {
+    if (!readyForReport.current) return
     onPosition(locate(global))
     // 距条带末尾（nextStart = 拼接话的全局起点）不足 2 页就提前拼接，滚动到分界时不顿挫
     if (baseCount > 0 && !noMoreRef.current && global >= nextStart - 2) {
       tryAppendRef.current()
     }
   })
+
+  // 恢复起始页：占位高度下的粗定位 + 目标页图片真实加载后再校一次。
+  // 页数未知（baseCount=0）时挂起，待回填后 effect 重跑
+  const initialDone = useRef(false)
+  useEffect(() => {
+    if (initialDone.current || baseCount <= 0) return
+    const t = Math.min(Math.max(initialPage, 0), baseCount - 1)
+    if (t <= 0) {
+      initialDone.current = true
+      return
+    }
+    initialDone.current = true
+    const container = ref.current
+    if (!container) return
+    const selector = `div[data-page="${t}"], img[data-page="${t}"]`
+    const scrollToTarget = (): boolean => {
+      const el = container.querySelector<HTMLElement>(selector)
+      if (!el) return false
+      el.scrollIntoView({ block: 'start' })
+      return true
+    }
+    const open = (): void => {
+      readyForReport.current = true
+    }
+    const settle = (): void => {
+      if (scrollToTarget()) open()
+    }
+    settle()
+    const img = container.querySelector<HTMLElement>(`${selector} img`)
+    img?.addEventListener('load', settle, { once: true })
+    const timer = setTimeout(() => {
+      settle()
+      open() // 兜底：任何路径都不能永久堵死位置回报
+    }, 800)
+    return () => {
+      img?.removeEventListener('load', settle)
+      clearTimeout(timer)
+    }
+  }, [baseCount, initialPage])
 
   // 滚到底部再往下滚：还能拼就拼；确实没有可拼的话时交由外层（仅限尚未拼接过，
   // 否则条带末话的下一话与路由话的下一话不是同一话，交给外层会跳错）
@@ -431,13 +485,16 @@ export function WebtoonViewer({
           style={{ width: `calc(min(100%, 768px) * ${zoom})`, maxWidth: 'none' }}
         >
           {Array.from({ length: baseCount }, (_, p) => (
-            <PageImage
-              key={p}
-              src={pageUrl(chapterId, p)}
-              alt={`第 ${p + 1} 页`}
-              dataPage={p}
-              className="block w-full"
-            />
+            // 占位高度：懒加载图高度为 0，没有保底高度时恢复定位/缩放锚点全部失真；
+            // 图片加载后真实高度大于占位自然撑开，条漫页通常远高于此值
+            <div key={p} data-page={p} style={{ minHeight: '50vh' }}>
+              <PageImage
+                src={pageUrl(chapterId, p)}
+                alt={`第 ${p + 1} 页`}
+                eager={p >= initialPage - 6 && p <= initialPage + 2}
+                className="block w-full"
+              />
+            </div>
           ))}
           {extras.map((c) => (
             <Fragment key={c.id}>
@@ -471,4 +528,4 @@ export function WebtoonViewer({
       </div>
     </>
   )
-}
+})

@@ -872,20 +872,31 @@ function Cloud189Drive({
   /**
    * 加载目录。refresh 为 true 时不压栈（刷新当前层），
    * 修掉旧实现「刷新会往面包屑里重复压一层」的问题。
+   * 序号防乱序：云端高延迟下连点两个文件夹，慢的旧响应后到时
+   * 会覆盖新目录内容且把栈压错（之后「挂载当前目录」会挂错）——
+   * 只有最新一次请求的结果可以落地。
    */
+  const browseSeq = useRef(0)
   const browseInto = useCallback(
     (id: string | undefined, name: string, fam: string | undefined, refresh = false): void => {
+      const seq = ++browseSeq.current
       setBrowsing(true)
       void window.yiben.cloud
         .browse(id, fam)
         .then((r) => {
+          if (seq !== browseSeq.current) return
           setBrowse(r)
           if (refresh) return
           if (id) setStack((s) => [...s, { id, name }])
           else setStack([])
         })
-        .catch((e) => setError(errorMessage(e)))
-        .finally(() => setBrowsing(false))
+        .catch((e) => {
+          if (seq !== browseSeq.current) return
+          setError(errorMessage(e))
+        })
+        .finally(() => {
+          if (seq === browseSeq.current) setBrowsing(false)
+        })
     },
     []
   )
@@ -1104,19 +1115,28 @@ function Cloud115Drive({
 
   const current = stack[stack.length - 1]
 
+  const browseSeq = useRef(0)
   const browseInto = useCallback(
     (id: string | undefined, name: string, refresh = false): void => {
+      // 序号防乱序（同 189 侧）：慢的旧响应后到时不能覆盖新目录内容/压错栈
+      const seq = ++browseSeq.current
       setBrowsing(true)
       void window.yiben.cloud115
         .browse(id)
         .then((r) => {
+          if (seq !== browseSeq.current) return
           setBrowse(r)
           if (refresh) return
           if (id) setStack((s) => [...s, { id, name }])
           else setStack([])
         })
-        .catch((e) => setError(errorMessage(e)))
-        .finally(() => setBrowsing(false))
+        .catch((e) => {
+          if (seq !== browseSeq.current) return
+          setError(errorMessage(e))
+        })
+        .finally(() => {
+          if (seq === browseSeq.current) setBrowsing(false)
+        })
     },
     []
   )

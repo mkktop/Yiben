@@ -42,7 +42,7 @@ import {
 } from './db'
 import { scanOneLocalSeries } from './scanner'
 import { runDiagnose } from './diagnose'
-import { rescanLibrary, runExclusiveScan, isScanning } from './rescan'
+import { rescanLibrary, runExclusiveScan, isScanning, queueRescan } from './rescan'
 import {
   cloudCapacity,
   cloudFamilies,
@@ -126,7 +126,10 @@ export function registerIpc(): void {
     const path = result.filePaths[0]
     const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path
     const lib = addLibrary(name, path)
-    void rescanLibrary(lib.id).catch(() => {})
+    // 排队首扫：恰有扫描在跑时不静默放弃（否则新书库永远不扫，用户面对空库无提示）
+    queueRescan(lib.id)
+    // 新库立即纳入文件监听（此前要重启才生效）
+    if (getSetting('autoRescan', true)) startWatchers()
     return lib
   })
 
@@ -142,6 +145,8 @@ export function registerIpc(): void {
       if (lib.kind !== 'local') await clearLibraryCache(id)
       removeLibrary(id)
       await removeSeriesArtifacts(artifacts.seriesIds, artifacts.chapterIds)
+      // 重建监听集合，释放已删库的 watcher（此前残留监听会反复触发失效重扫）
+      if (getSetting('autoRescan', true)) startWatchers()
     })
   })
 
@@ -283,9 +288,11 @@ export function registerIpc(): void {
     return merged
   })
 
-  ipcMain.handle('bookmarks:toggle', (_e, payload: { chapterId: number; page: number }) =>
-    toggleBookmark(payload.chapterId, payload.page)
-  )
+  ipcMain.handle('bookmarks:toggle', (_e, payload: { chapterId: number; page: number }) => {
+    const page = Math.floor(Number(payload?.page))
+    if (!Number.isFinite(page) || page < 0) throw new Error('页码无效')
+    return toggleBookmark(payload.chapterId, page)
+  })
   ipcMain.handle('bookmarks:list', (_e, seriesId: number) => bookmarksForSeries(seriesId))
 
   // PDF 渲染用：经 IPC 返回原始字节（自定义协议的 fetch 在 Electron 下不可靠）
@@ -313,7 +320,11 @@ export function registerIpc(): void {
   ipcMain.handle(
     'progress:save',
     (_e, payload: { chapterId: number; page: number; completed?: boolean }) => {
-      saveProgress(payload.chapterId, payload.page, payload.completed ?? false)
+      const page = Math.floor(Number(payload?.page))
+      if (!Number.isFinite(payload?.chapterId) || !Number.isFinite(page) || page < 0) {
+        throw new Error('进度参数无效')
+      }
+      saveProgress(payload.chapterId, page, payload.completed ?? false)
       return true
     }
   )
@@ -396,7 +407,7 @@ export function registerIpc(): void {
     async (_e, payload: { folderId: string; familyId?: string; name: string }) => {
       const lib = addLibrary(payload.name, `cloud189://${payload.folderId}`, 'cloud189')
       setLibraryCloudMeta(lib.id, payload.folderId, payload.familyId ?? null)
-      void rescanLibrary(lib.id).catch(() => {})
+      queueRescan(lib.id)
       return lib
     }
   )
@@ -432,7 +443,7 @@ export function registerIpc(): void {
     async (_e, payload: { folderId: string; name: string }) => {
       const lib = addLibrary(payload.name, `cloud115://${payload.folderId}`, '115')
       setLibraryCloudMeta(lib.id, payload.folderId, null)
-      void rescanLibrary(lib.id).catch(() => {})
+      queueRescan(lib.id)
       return lib
     }
   )

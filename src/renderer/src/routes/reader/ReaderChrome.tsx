@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowLeft,
   ArrowRightToLine,
@@ -15,7 +15,7 @@ import {
   X,
   type LucideIcon
 } from 'lucide-react'
-import { useReaderStore, spreadPages, atLastScreen, type ReaderMode } from '@/stores/reader'
+import { useReaderStore, spreadPages, atLastScreen, patchReaderPrefs, type ReaderMode } from '@/stores/reader'
 import { pageThumbUrl, type BookmarkInfo } from '@shared/types'
 import { cn } from '@/lib/utils'
 import { WindowControls } from '@/components/layout/WindowControls'
@@ -32,6 +32,8 @@ interface NeighborChapter {
 
 export interface ReaderChromeProps {
   chapterId: number
+  /** fit/rotate/rtl 按钮改动按系列落盘需要 */
+  seriesId: number
   seriesTitle: string
   chapterTitle: string
   /** PDF 没有逐页图片（pdfjs 直接渲染 canvas），缩略图条不可用 */
@@ -68,8 +70,14 @@ const MODES: Array<{ key: ReaderMode; label: string; icon: LucideIcon }> = [
   { key: 'webtoon', label: '条漫', icon: GalleryVertical }
 ]
 
-export function ReaderChrome({
+/**
+ * memo：ReaderPage 订阅 page（进度写入需要），每次跨页都会重渲染，
+ * Chrome 的 props 不含 page，memo 后整棵工具栏跳过 reconcile——
+ * 页码/进度条/末页卡/缩略图条由下面几个自订阅小组件各自更新。
+ */
+export const ReaderChrome = memo(function ReaderChrome({
   chapterId,
+  seriesId,
   seriesTitle,
   chapterTitle,
   canThumbnail,
@@ -91,30 +99,16 @@ export function ReaderChrome({
   onPanelChange,
   hideEndCard
 }: ReaderChromeProps) {
-  // 细粒度订阅：顶栏只关心自己展示/操作的字段，避免跟随无关状态整树 reconcile
+  // 细粒度订阅：顶栏只关心自己展示/操作的字段，避免跟随无关状态整树 reconcile。
+  // page/pageCount/widePages 不在这里订阅（下放给自订阅的展示组件）
   const mode = useReaderStore((s) => s.mode)
   const fit = useReaderStore((s) => s.fit)
   const rtl = useReaderStore((s) => s.rtl)
   const rotate = useReaderStore((s) => s.rotate)
-  const page = useReaderStore((s) => s.page)
-  const pageCount = useReaderStore((s) => s.pageCount)
-  const widePages = useReaderStore((s) => s.widePages)
   const spreadOffset = useReaderStore((s) => s.spreadOffset)
   const immersive = useReaderStore((s) => s.immersive)
   const showThumbs = useReaderStore((s) => s.showThumbs)
-  const setPage = useReaderStore((s) => s.setPage)
-  const patch = useReaderStore((s) => s.patch)
   const toggleThumbs = useReaderStore((s) => s.toggleThumbs)
-
-  const spread = spreadPages(page, pageCount, rtl, widePages, spreadOffset)
-  const lo = Math.min(...spread) + 1
-  const hi = Math.max(...spread) + 1
-  const currentDisplay =
-    mode === 'webtoon' || lo === hi
-      ? `${page + 1} / ${pageCount}`
-      : `${lo}-${hi} / ${pageCount}`
-  // 与 ReaderPage.goNext 的边界判定共用同一函数：末页卡片出现的时机 = 翻页会进下一话的时机
-  const atEnd = atLastScreen(page, pageCount, mode, widePages, spreadOffset)
 
   return (
     <>
@@ -156,11 +150,7 @@ export function ReaderChrome({
             <span className="text-muted-foreground">{chapterTitle}</span>
           </p>
         </div>
-        <PageJump
-          display={currentDisplay}
-          page={page}
-          onJump={(page0) => onJump(chapterId, page0)}
-        />
+        <PageJumpChip chapterId={chapterId} onJump={onJump} />
         <div className="mx-1 h-5 w-px bg-border/60" />
         <IconBtn
           title={`书签：当前页${isBookmarked ? '已加' : '未加'}（B）`}
@@ -178,7 +168,7 @@ export function ReaderChrome({
         </IconBtn>
         <IconBtn
           title={`方向：${rtl ? '日漫（从右往左）' : '西漫（从左往右）'}（D 切换）`}
-          onClick={() => patch({ rtl: !rtl })}
+          onClick={() => patchReaderPrefs(seriesId, { rtl: !rtl })}
         >
           <ArrowRightToLine className={cn(rtl && 'scale-x-[-1]')} />
         </IconBtn>
@@ -194,7 +184,9 @@ export function ReaderChrome({
         <IconBtn
           title={`适配：${fit === 'width' ? '适宽' : fit === 'height' ? '适高' : '原始'}（S 切换）`}
           onClick={() =>
-            patch({ fit: fit === 'width' ? 'height' : fit === 'height' ? 'original' : 'width' })
+            patchReaderPrefs(seriesId, {
+              fit: fit === 'width' ? 'height' : fit === 'height' ? 'original' : 'width'
+            })
           }
         >
           <span className="text-[11px] font-semibold">
@@ -203,7 +195,7 @@ export function ReaderChrome({
         </IconBtn>
         <IconBtn
           title="旋转（R）"
-          onClick={() => patch({ rotate: ((rotate + 90) % 360) as number })}
+          onClick={() => patchReaderPrefs(seriesId, { rotate: ((rotate + 90) % 360) as number })}
         >
           <RotateCw />
         </IconBtn>
@@ -246,69 +238,16 @@ export function ReaderChrome({
         ))}
       </div>
 
-      {/* 末页提示卡：居中卡片，直接进下一话（键盘/点击继续翻页也会自动进入）；
-          条漫跨话拼接时下一话已在同一条带里，卡就不必再出现 */}
-      {atEnd && neighbors?.next && !hideEndCard && (
-        <div className="absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2">
-          <div className="animate-scale-in w-80 max-w-[calc(100vw-1.5rem)] rounded-2xl border border-border/50 bg-background/80 p-5 text-center text-foreground shadow-lg backdrop-blur-md">
-            <p className="text-[11px] font-medium tracking-[0.25em] text-muted-foreground">
-              本话完
-            </p>
-            <p className="mt-1.5 truncate text-sm font-semibold">{neighbors.next.title}</p>
-            <div className="mt-4 flex items-center gap-2">
-              <Button className="flex-1" onClick={onNextChapter}>
-                进入下一话
-                <ChevronRight />
-              </Button>
-              <Button variant="ghost" className="flex-1" onClick={onBack}>
-                返回书架
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 底部进度条 */}
-      <div
-        className={cn(
-          'absolute inset-x-0 bottom-0 z-10 h-1 bg-white/10 transition-opacity',
-          immersive ? 'opacity-0' : 'opacity-100'
-        )}
-      >
-        <div
-          className="h-full bg-primary transition-all"
-          style={{ width: `${pageCount > 1 ? (page / (pageCount - 1)) * 100 : 100}%` }}
-        />
-      </div>
-
-      {/* 缩略图条（底部悬浮毛玻璃） */}
+      {/* 末页提示卡 + 底部进度条 + 缩略图条（均自订阅 page/pageCount） */}
+      <EndCard
+        neighbors={neighbors}
+        hideEndCard={hideEndCard}
+        onNextChapter={onNextChapter}
+        onBack={onBack}
+      />
+      <ProgressStrip />
       {showThumbs && canThumbnail && (
-        <div
-          className={cn(
-            'absolute inset-x-3 bottom-3 z-20 flex h-28 items-center gap-2 overflow-x-auto rounded-xl border border-border/50 bg-background/80 px-3 shadow-lg backdrop-blur-md transition-opacity',
-            immersive ? 'pointer-events-none opacity-0' : 'opacity-100'
-          )}
-        >
-          {Array.from({ length: pageCount }, (_, p) => (
-            <button
-              key={p}
-              onClick={() => setPage(p)}
-              className={cn(
-                'relative h-20 shrink-0 overflow-hidden rounded-lg border-2 transition-all',
-                p === page ? 'border-primary' : 'border-transparent opacity-60 hover:opacity-100'
-              )}
-              title={`第 ${p + 1} 页`}
-            >
-              <img src={pageThumbUrl(chapterId, p)} alt="" className="h-full w-auto" loading="lazy" />
-              <span className="absolute bottom-0 right-0 bg-black/60 px-1 text-[10px] tabular-nums text-white">
-                {p + 1}
-              </span>
-              {bookmarks.some((b) => b.chapter_id === chapterId && b.page === p) && (
-                <Bookmark className="absolute left-0.5 top-0.5 size-3 fill-primary text-primary" />
-              )}
-            </button>
-          ))}
-        </div>
+        <ThumbStrip chapterId={chapterId} bookmarks={bookmarks} onJump={onJump} />
       )}
 
       {/* 书签列表面板 */}
@@ -365,7 +304,133 @@ export function ReaderChrome({
       {panel === 'help' && <KeyboardHelp onClose={() => onPanelChange('none')} />}
     </>
   )
+})
+
+/** 页码指示/跳页（自订阅：跨页时只更新这里，不牵动整个顶栏） */
+function PageJumpChip({
+  chapterId,
+  onJump
+}: {
+  chapterId: number
+  onJump: (chapterId: number, page0: number) => void
+}) {
+  const mode = useReaderStore((s) => s.mode)
+  const page = useReaderStore((s) => s.page)
+  const pageCount = useReaderStore((s) => s.pageCount)
+  const widePages = useReaderStore((s) => s.widePages)
+  const spreadOffset = useReaderStore((s) => s.spreadOffset)
+  const rtl = useReaderStore((s) => s.rtl)
+
+  const spread = spreadPages(page, pageCount, rtl, widePages, spreadOffset)
+  const lo = Math.min(...spread) + 1
+  const hi = Math.max(...spread) + 1
+  const display =
+    mode === 'webtoon' || lo === hi ? `${page + 1} / ${pageCount}` : `${lo}-${hi} / ${pageCount}`
+  return <PageJump display={display} page={page} onJump={(page0) => onJump(chapterId, page0)} />
 }
+
+/** 末页提示卡：居中卡片，直接进下一话（键盘/点击继续翻页也会自动进入）；
+    条漫跨话拼接时下一话已在同一条带里，卡就不必再出现 */
+const EndCard = memo(function EndCard({
+  neighbors,
+  hideEndCard,
+  onNextChapter,
+  onBack
+}: {
+  neighbors: { prev: NeighborChapter | null; next: NeighborChapter | null } | null
+  hideEndCard?: boolean
+  onNextChapter: () => void
+  onBack: () => void
+}) {
+  const page = useReaderStore((s) => s.page)
+  const pageCount = useReaderStore((s) => s.pageCount)
+  const mode = useReaderStore((s) => s.mode)
+  const widePages = useReaderStore((s) => s.widePages)
+  const spreadOffset = useReaderStore((s) => s.spreadOffset)
+  // 与 ReaderPage.goNext 的边界判定共用同一函数：卡片出现的时机 = 翻页会进下一话的时机
+  const atEnd = atLastScreen(page, pageCount, mode, widePages, spreadOffset)
+  if (!atEnd || !neighbors?.next || hideEndCard) return null
+  return (
+    <div className="absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2">
+      <div className="animate-scale-in w-80 max-w-[calc(100vw-1.5rem)] rounded-2xl border border-border/50 bg-background/80 p-5 text-center text-foreground shadow-lg backdrop-blur-md">
+        <p className="text-[11px] font-medium tracking-[0.25em] text-muted-foreground">本话完</p>
+        <p className="mt-1.5 truncate text-sm font-semibold">{neighbors.next.title}</p>
+        <div className="mt-4 flex items-center gap-2">
+          <Button className="flex-1" onClick={onNextChapter}>
+            进入下一话
+            <ChevronRight />
+          </Button>
+          <Button variant="ghost" className="flex-1" onClick={onBack}>
+            返回书架
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+})
+
+/** 底部进度条（自订阅） */
+function ProgressStrip() {
+  const immersive = useReaderStore((s) => s.immersive)
+  const page = useReaderStore((s) => s.page)
+  const pageCount = useReaderStore((s) => s.pageCount)
+  return (
+    <div
+      className={cn(
+        'absolute inset-x-0 bottom-0 z-10 h-1 bg-white/10 transition-opacity',
+        immersive ? 'opacity-0' : 'opacity-100'
+      )}
+    >
+      <div
+        className="h-full bg-primary transition-all"
+        style={{ width: `${pageCount > 1 ? (page / (pageCount - 1)) * 100 : 100}%` }}
+      />
+    </div>
+  )
+}
+
+/** 缩略图条（自订阅：跨页只 reconcile 这里，Chrome 其余部分不动） */
+const ThumbStrip = memo(function ThumbStrip({
+  chapterId,
+  bookmarks,
+  onJump
+}: {
+  chapterId: number
+  bookmarks: BookmarkInfo[]
+  onJump: (chapterId: number, page0: number) => void
+}) {
+  const immersive = useReaderStore((s) => s.immersive)
+  const page = useReaderStore((s) => s.page)
+  const pageCount = useReaderStore((s) => s.pageCount)
+  return (
+    <div
+      className={cn(
+        'absolute inset-x-3 bottom-3 z-20 flex h-28 items-center gap-2 overflow-x-auto rounded-xl border border-border/50 bg-background/80 px-3 shadow-lg backdrop-blur-md transition-opacity',
+        immersive ? 'pointer-events-none opacity-0' : 'opacity-100'
+      )}
+    >
+      {Array.from({ length: pageCount }, (_, p) => (
+        <button
+          key={p}
+          onClick={() => onJump(chapterId, p)}
+          className={cn(
+            'relative h-20 shrink-0 overflow-hidden rounded-lg border-2 transition-all',
+            p === page ? 'border-primary' : 'border-transparent opacity-60 hover:opacity-100'
+          )}
+          title={`第 ${p + 1} 页`}
+        >
+          <img src={pageThumbUrl(chapterId, p)} alt="" className="h-full w-auto" loading="lazy" />
+          <span className="absolute bottom-0 right-0 bg-black/60 px-1 text-[10px] tabular-nums text-white">
+            {p + 1}
+          </span>
+          {bookmarks.some((b) => b.chapter_id === chapterId && b.page === p) && (
+            <Bookmark className="absolute left-0.5 top-0.5 size-3 fill-primary text-primary" />
+          )}
+        </button>
+      ))}
+    </div>
+  )
+})
 
 /** 跨页配对图标：两页并排加一条错位分隔线 */
 function SpreadGlyph(): ReactNode {
@@ -400,17 +465,20 @@ function PageJump({
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
+  // 编辑期间条漫滚动会推进 page：只在进入编辑态那一刻取值，
+  // 不能每次 page 变化都覆盖用户正在输入的内容
+  const pageRef = useRef(page)
+  pageRef.current = page
 
   useEffect(() => {
-    if (editing) {
-      setValue(String(page + 1))
-      // 等输入框挂载后聚焦并全选
-      requestAnimationFrame(() => {
-        inputRef.current?.focus()
-        inputRef.current?.select()
-      })
-    }
-  }, [editing, page])
+    if (!editing) return
+    setValue(String(pageRef.current + 1))
+    // 等输入框挂载后聚焦并全选
+    requestAnimationFrame(() => {
+      inputRef.current?.focus()
+      inputRef.current?.select()
+    })
+  }, [editing])
 
   if (!editing) {
     return (

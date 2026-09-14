@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { getSetting, setSetting } from '../settings'
 import { broadcast } from '../events'
 import { decryptSecret, encryptSecret } from '../util/secret'
+import { MinIntervalChain } from '../util/apiGate'
 import {
   buildCookieHeader,
   extractDownloadUrl,
@@ -77,21 +78,14 @@ function requireCred(): ParsedCredential {
 /**
  * 115 的 web 接口对请求频率敏感（aList 默认 2 r/s 限速）。
  * 所有 115 API 调用串行通过这个队列并保持最小间隔；CDN 下载不经过它。
+ * 必须把执行体本身串进链：只串行「间隔检查」时，慢请求（20s 超时内）执行期间
+ * 后续请求照样并发在途，正是 990007 风控敏感的 burst 形态。
  */
-let apiChain: Promise<unknown> = Promise.resolve()
 const API_MIN_INTERVAL_MS = 400
-let lastApiAt = 0
+const apiGate = new MinIntervalChain(API_MIN_INTERVAL_MS)
 
 function apiSlot<T>(fn: () => Promise<T>): Promise<T> {
-  const gate = apiChain.then(async () => {
-    const gap = Date.now() - lastApiAt
-    if (gap < API_MIN_INTERVAL_MS) {
-      await new Promise((r) => setTimeout(r, API_MIN_INTERVAL_MS - gap))
-    }
-    lastApiAt = Date.now()
-  })
-  apiChain = gate.catch(() => {})
-  return gate.then(fn)
+  return apiGate.run(fn)
 }
 
 /** 同类型告警 60 秒内只广播一次（与 cloud189 的 noteCloudError 同策略） */

@@ -113,14 +113,16 @@ export async function importData(): Promise<ImportResult | null> {
   const stat: ImportResult = { series: 0, matched: 0, progress: 0, bookmarks: 0, skipped: 0 }
   for (const es of parsed.series) {
     stat.series++
-    const seriesId = findSeriesIdByPath(es.folderPath)
+    // 损坏/手改的导出文件可能缺 chapters 字段，裸访问会把整个导入炸成 TypeError
+    const esChapters = Array.isArray(es?.chapters) ? es.chapters : []
+    const seriesId = es ? findSeriesIdByPath(es.folderPath) : 0
     if (!seriesId) {
-      stat.skipped += es.chapters.length
+      stat.skipped += esChapters.length
       continue
     }
     stat.matched++
     const chapters = chaptersBySeries(seriesId)
-    for (const ec of es.chapters) {
+    for (const ec of esChapters) {
       const ch =
         chapters.find((c) => c.path === ec.path) ??
         chapters.find((c) => c.title === ec.title && c.sort_index === ec.sortIndex)
@@ -129,15 +131,20 @@ export async function importData(): Promise<ImportResult | null> {
         continue
       }
       if (ec.progress) {
+        const page = Math.floor(Number(ec.progress.page))
         const [cur] = getProgress([ch.id])
         // 只用更新的进度覆盖，避免导入旧备份回退当前阅读位置
-        if (!cur || ec.progress.updatedAt > cur.updated_at) {
-          saveProgress(ch.id, ec.progress.page, ec.progress.completed === 1)
+        if (
+          Number.isFinite(page) &&
+          page >= 0 &&
+          (!cur || ec.progress.updatedAt > cur.updated_at)
+        ) {
+          saveProgress(ch.id, page, ec.progress.completed === 1)
           stat.progress++
         }
       }
       for (const page of ec.bookmarks ?? []) {
-        if (addBookmark(ch.id, page)) stat.bookmarks++
+        if (Number.isFinite(page) && page >= 0 && addBookmark(ch.id, page)) stat.bookmarks++
       }
     }
   }

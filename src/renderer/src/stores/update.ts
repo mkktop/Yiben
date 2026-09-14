@@ -66,9 +66,14 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
 
   download: async () => {
     set({ downloading: true, percent: 0, error: '' })
-    const r = await window.yiben.updater.download()
-    if (!r.ok) set({ downloading: false, error: r.error ?? '下载失败' })
-    // 成功时 onReady 事件把 downloading 置 false 并写入 ready
+    try {
+      const r = await window.yiben.updater.download()
+      if (!r.ok) set({ downloading: false, error: r.error ?? '下载失败' })
+      // 成功时 onReady 事件把 downloading 置 false 并写入 ready
+    } catch (e) {
+      // IPC 层 rejection 不接住的话 downloading 恒为 true，按钮永久转圈只能重启
+      set({ downloading: false, error: String(e) })
+    }
   },
 
   install: () => {

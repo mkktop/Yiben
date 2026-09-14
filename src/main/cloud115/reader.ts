@@ -8,7 +8,7 @@ import { RangeUnsupportedError } from '../archives/remoteZip'
 import { getRemoteZip, dropRemoteZip } from '../cloud189/remoteZipManager'
 import { ensureCached } from '../cloud189/cache'
 import { broadcast } from '../events'
-import { archiveKindOf, longPath } from '../util/paths'
+import { archiveKindOf, longPath, sanitizeFileName } from '../util/paths'
 import { cloud115CacheDir, cloud115DownloadUrl } from './client'
 import type { EnsureResult } from '../cloud189/ensure'
 
@@ -32,7 +32,12 @@ export async function ensure115ChapterPage(
   if (ch.kind === 'cfolder') {
     const page = getChapterPageFile(chapterId, pageIndex)
     if (!page) throw new Error(`页码越界：${pageIndex}`)
-    const dest = join(cloud115CacheDir(), `f-${chapterId}`, `${String(pageIndex).padStart(5, '0')}-${page.name}`)
+    // 网盘侧文件名不可信：清洗后才允许 join 进缓存子目录（防 \ 分隔符/.. 逃逸）
+    const dest = join(
+      cloud115CacheDir(),
+      `f-${chapterId}`,
+      `${String(pageIndex).padStart(5, '0')}-${sanitizeFileName(page.name)}`
+    )
     await ensureCached(page.file_id, undefined, dest, page.size, undefined, signal, (id) =>
       cloud115DownloadUrl(id)
     )

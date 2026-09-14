@@ -1,5 +1,4 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
 import type {
   CloudBrowseResult,
   CloudNotice,
@@ -328,13 +327,14 @@ const api = {
 
 export type YibenApi = typeof api
 
+// 只暴露白名单化的 yiben API：不注入 @electron-toolkit 的通用 IPC 桥，
+// 否则窗口内任何来源的页面都能不限 channel/参数地直呼 ipcRenderer
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld('electron', electronAPI)
     contextBridge.exposeInMainWorld('yiben', api)
   } catch (error) {
     console.error(error)
   }
 } else {
-  Object.assign(globalThis, { electron: electronAPI, yiben: api })
+  Object.assign(globalThis, { yiben: api })
 }

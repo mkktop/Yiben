@@ -11,6 +11,12 @@ const CONCURRENCY = 3
 const inflight = new Map<number, Promise<PageDim[]>>()
 
 /**
+ * 探测会随阅读位置切换：阅读器只停留在一个章节，切话后旧探测继续跑
+ * 等于整章后台下载（挤占下载槽、耗带宽）。新探测启动时取消上一个。
+ */
+let activeCtrl: AbortController | null = null
+
+/**
  * 确保章节的页尺寸已知：读 page_dims 表，缺的页在后台按需解码页首探测。
  * 立即返回现有记录（可能为空）；探测完成后经 `chapter:pageDims` 广播补齐。
  * 双页模式的跨页大图（横宽比 >1 的扉页/彩页）靠它自动单页展示。
@@ -29,7 +35,11 @@ export function ensurePageDims(chapterId: number): { dims: PageDim[]; probing: b
   if (missing.length === 0) return { dims, probing: false }
 
   if (!inflight.has(chapterId)) {
-    const task = probe(chapterId, missing)
+    // 别的章节开了新探测 → 当前这个所属章节已不在阅读，取消它
+    if (activeCtrl) activeCtrl.abort()
+    const ctrl = new AbortController()
+    activeCtrl = ctrl
+    const task = probe(chapterId, missing, ctrl.signal)
       .catch((err) => {
         console.warn(
           `[dims] 页尺寸探测失败 chapter=${chapterId}:`,
@@ -37,31 +47,37 @@ export function ensurePageDims(chapterId: number): { dims: PageDim[]; probing: b
         )
         return [] as PageDim[]
       })
-      .finally(() => inflight.delete(chapterId))
+      .finally(() => {
+        inflight.delete(chapterId)
+        if (activeCtrl === ctrl) activeCtrl = null
+      })
     inflight.set(chapterId, task)
   }
   return { dims, probing: true }
 }
 
-async function probe(chapterId: number, missing: number[]): Promise<PageDim[]> {
+async function probe(chapterId: number, missing: number[], signal: AbortSignal): Promise<PageDim[]> {
   const ch = getChapter(chapterId)
   if (!ch) return []
   const out: PageDim[] = []
 
   // 简单并发窗口：按 CONCURRENCY 分批顺序推进，每批落库 + 广播
   for (let i = 0; i < missing.length; i += BATCH) {
+    if (signal.aborted) break
     const batch = missing.slice(i, i + BATCH)
     const results = await mapLimited(batch, CONCURRENCY, async (idx) => {
+      if (signal.aborted) return null
       try {
-        const ensured = await ensureChapterPage(chapterId, idx)
+        const ensured = await ensureChapterPage(chapterId, idx, signal)
         const buf = await readEnsuredPage(ensured, idx)
         const meta = await sharp(buf).metadata()
         if (meta.width && meta.height) return { idx, w: meta.width, h: meta.height }
       } catch {
-        /* 单页失败不影响其余页 */
+        /* 单页失败（含取消）不影响其余页 */
       }
       return null
     })
+    if (signal.aborted) break
     const ok = results.filter((d): d is PageDim => d !== null)
     if (ok.length > 0) {
       savePageDims(chapterId, ok)

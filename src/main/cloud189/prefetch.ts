@@ -94,9 +94,10 @@ export function startPrefetch(seriesId: number): PrefetchProgress {
 
   void (async () => {
     const failed: string[] = []
+    let error: string | undefined
     try {
       for (let i = 0; i < chapters.length; i++) {
-        if (task.cancel) return
+        if (task.cancel) break
         const ch = chapters[i]
         progress.chapterTitle = ch.title
         broadcast('prefetch:progress', { ...progress })
@@ -108,17 +109,18 @@ export function startPrefetch(seriesId: number): PrefetchProgress {
         if (i < chapters.length - 1 && !task.cancel) await sleep(chapterGapMs())
       }
     } catch (err) {
-      broadcast('prefetch:done', {
-        seriesId,
-        cancelled: false,
-        error: err instanceof Error ? err.message : String(err),
-        failed
-      })
-      return
+      error = err instanceof Error ? err.message : String(err)
     } finally {
       running.delete(seriesId)
+      // 成功/失败/取消统一在此收口（同 rescan.ts 的 done 语义）：
+      // UI 只认 prefetch:done 清进度，任何路径漏发都会让按钮永久卡在「缓存中」
+      broadcast('prefetch:done', {
+        seriesId,
+        cancelled: task.cancel && !error,
+        error,
+        failed
+      })
     }
-    broadcast('prefetch:done', { seriesId, cancelled: task.cancel, failed })
   })()
 
   return progress

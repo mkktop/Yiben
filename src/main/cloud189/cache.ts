@@ -166,13 +166,19 @@ export interface DownloadProgress {
   total: number
 }
 
+/** 预取/外部取消路径的报错形态：fetch 的 abort reason 或重试链里的取消再抛 */
+function isCancelledError(err: unknown): boolean {
+  if (err instanceof Error && err.name === 'AbortError') return true
+  return err instanceof Error && /已取消|aborted?/i.test(err.message)
+}
+
 /**
  * 把云盘文件下载到本地缓存并返回缓存路径。
  * 已存在且大小吻合时直接复用；同一目标的并发调用共享同一次下载。
  * signal 用于外部取消（离线预取的中止），触发后进行中的下载立即中断。
  * resolveUrl 由各网盘提供（直链有时效，重试时每次重新取）；缺省为天翼直链。
  */
-export function ensureCached(
+export async function ensureCached(
   fileId: string,
   familyId: string | undefined,
   destPath: string,
@@ -183,7 +189,16 @@ export function ensureCached(
 ): Promise<string> {
   const resolve = resolveUrl ?? ((id: string) => cloudDownloadUrl(id, familyId))
   const running = inflight.get(destPath)
-  if (running) return running
+  if (running) {
+    if (signal) return running
+    // 前台（无取消信号）搭车预取发起的下载：预取被取消会连带中断这次下载，
+    // 阅读中的页不该跟着挂——取消类错误自行重新发起
+    try {
+      return await running
+    } catch (err) {
+      if (!isCancelledError(err)) throw err
+    }
+  }
   const task = download(fileId, resolve, destPath, expectedSize, onProgress, signal).finally(() => {
     inflight.delete(destPath)
   })
@@ -282,8 +297,11 @@ async function download(
     }
   })
 
-  index[destPath] = { size: loaded, at: Date.now() }
-  await evict(index, destPath)
+  // 重新取当前索引：下载期间 clearAllCache/resetIndex 可能已换掉内存索引，
+  // 写回旧对象会产生磁盘上索引外的孤儿文件（配额统计漏算）
+  const fresh = await loadIndex()
+  fresh[destPath] = { size: loaded, at: Date.now() }
+  await evict(fresh, destPath)
   await flushIndex()
   return destPath
 }
@@ -291,6 +309,32 @@ async function download(
 /** 云端缓存根目录（天翼 + 115，共用一套容量上限与 LRU 索引） */
 export function cloudCacheRoots(): string[] {
   return [cloudCacheDir(), cloud115CacheDir()]
+}
+
+/** 启动清扫崩溃/强杀残留的半成品文件（cacheStats 与 evict 都看不见它们） */
+export async function cleanupPartFiles(): Promise<void> {
+  for (const root of cloudCacheRoots()) {
+    if (!existsSync(longPath(root))) continue
+    const walk = async (dir: string): Promise<void> => {
+      let entries
+      try {
+        entries = await readdir(longPath(dir), { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        const path = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          await walk(path)
+          continue
+        }
+        if (entry.name.endsWith('.part')) {
+          await rm(longPath(path), { force: true }).catch(() => {})
+        }
+      }
+    }
+    await walk(root)
+  }
 }
 
 export async function cacheStats(): Promise<{ totalBytes: number; files: number }> {

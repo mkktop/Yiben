@@ -46,6 +46,8 @@ function bootstrap(): void {
       registerIpc()
       // 打包版挂 electron-updater 监听（进度/就绪广播）；dev 下是空操作
       setupAutoUpdate()
+      // 清扫上次崩溃/强杀残留的 .part 半成品（不影响启动，异步进行）
+      void import('./cloud189/cache').then((m) => m.cleanupPartFiles()).catch(() => {})
 
       // 本地库文件监听（可在设置里关闭）；自测模式不启动
       if (!process.env['YIBEN_SELFTEST'] && getSetting('autoRescan', true)) startWatchers()
@@ -167,7 +169,8 @@ function createWindow(): void {
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
+      // 渲染层核心工作是解码不可信内容（网盘/压缩包里的图片与 PDF），
+      // 必须保留 OS 级沙箱：contextIsolation 只防脚本渗透，不防解码器内存破坏
       contextIsolation: true,
       nodeIntegration: false
     }
@@ -209,4 +212,17 @@ function createWindow(): void {
   } else {
     void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  // 只允许应用自身页面导航（hash 路由切换、dev 热重载）：
+  // 一旦放行外部地址，远程页面将继承 preload 注入的 IPC 能力
+  const appOrigin =
+    is.dev && process.env['ELECTRON_RENDERER_URL']
+      ? new URL(process.env['ELECTRON_RENDERER_URL']).origin
+      : `file:///${join(__dirname, '../renderer/index.html').replace(/\\/g, '/')}`
+  mainWindow.webContents.on('will-navigate', (e, url) => {
+    if (!url.startsWith(appOrigin)) {
+      console.warn('[nav] 已拦截非应用导航:', url)
+      e.preventDefault()
+    }
+  })
 }

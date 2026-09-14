@@ -74,6 +74,25 @@ export async function rescanQuietly(libraryId: number): Promise<void> {
   }
 }
 
+/**
+ * 添加书库后的自动首扫：此前是 fire-and-forget + 空 catch——恰有扫描在跑时
+ * 直接被互斥挡掉且无任何提示，用户面对空库无从得知。这里排队等当前扫描
+ * 结束再扫（同一时间只排一个任务，内部错误已由 rescanLibrary 广播）。
+ */
+let rescanQueue: Promise<void> = Promise.resolve()
+export function queueRescan(libraryId: number): void {
+  rescanQueue = rescanQueue
+    .then(async () => {
+      // 等互斥释放（手动扫描/诊断可能占着；上限 60s 防呆）
+      for (let i = 0; i < 60; i++) {
+        if (!scanning) break
+        await new Promise((r) => setTimeout(r, 1000))
+      }
+      await rescanQuietly(libraryId)
+    })
+    .catch(() => {})
+}
+
 /** 其他独占型扫描任务（单系列重扫）复用同一个互斥标志 */
 export async function runExclusiveScan<T>(fn: () => Promise<T>): Promise<T> {
   if (scanning) throw new Error('已有扫描任务在进行中')

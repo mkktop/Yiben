@@ -1,14 +1,22 @@
 import { app, safeStorage } from 'electron'
 import { CloudClient, QRCodeStatus, Store } from 'cloud189-sdk'
 import type { QRCodeData } from 'cloud189-sdk'
-import { readFile, rm, writeFile } from 'fs/promises'
+import { readFile, rename, rm, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { getSetting, setSetting } from '../settings'
 import { broadcast } from '../events'
 import { decryptSecret, encryptSecret } from '../util/secret'
+import { MinIntervalChain } from '../util/apiGate'
 
 let client: CloudClient | null = null
 let currentUsername = ''
+
+/**
+ * 目录列举 API 的最小间隔串行队列：天翼没有像 115 那样明确的限流口径，
+ * 但扫描层并发下钻 + 翻页列举会在大库瞬间打出几十个 getListFiles——
+ * 正是 RatesExceed 风控的触发形态。下载直链/容量查询是用户节奏的单发调用，不过闸。
+ */
+const listGate = new MinIntervalChain(300)
 
 /** 会话 token 落盘文件：accessToken（约 7 天）→ refreshToken 优先复用，都失效才密码登录 */
 function tokenFile(): string {
@@ -51,7 +59,12 @@ class EncryptedTokenStore extends Store {
       refreshToken: token.refreshToken ? encryptSecret(token.refreshToken) : undefined,
       expiresIn: token.expiresIn
     }
-    await writeFile(tokenFile(), JSON.stringify(rec), 'utf-8')
+    // tmp + rename 原子写（与 cache.ts 的索引落盘一致）：
+    // 写一半崩溃会丢整个会话文件，扫码与密码两条链并发写也可能交错
+    const file = tokenFile()
+    const tmp = `${file}.tmp`
+    await writeFile(tmp, JSON.stringify(rec), 'utf-8')
+    await rename(tmp, file)
   }
 }
 
@@ -135,6 +148,10 @@ export async function cloudLogin(username: string, password: string): Promise<vo
   if (safeStorage.isEncryptionAvailable()) {
     const enc = safeStorage.encryptString(password).toString('base64')
     setSetting<StoredCred>(CRED_KEY, { username, enc })
+  } else {
+    // 降级时不落密码（settings 表会是明文）：会话仍可经加密 token 恢复，
+    // token 也失效时需要用户重新登录，而不是把明文密码留在磁盘上
+    console.warn('[cloud189] safeStorage 不可用，本次登录不持久化密码（重启后按 token 恢复）')
   }
 }
 
@@ -296,16 +313,23 @@ async function cloudListPage(
   const out: CloudEntry[] = []
   const pageSize = 200
   for (let pageNum = 1; ; pageNum++) {
-    const resp = await c.getListFiles(
-      { folderId, pageSize, pageNum, iconOption: 1, orderBy: 1, descending: false },
-      familyId
+    const resp = await listGate.run(() =>
+      c.getListFiles(
+        { folderId, pageSize, pageNum, iconOption: 1, orderBy: 1, descending: false },
+        familyId
+      )
     )
     const ao = resp.fileListAO
     for (const f of ao.folderList ?? []) out.push({ id: f.id, name: f.name, size: 0, isDir: true })
     for (const f of ao.fileList ?? [])
       out.push({ id: f.id, name: f.name, size: f.size ?? 0, isDir: false })
-    if (out.length >= (ao.count ?? 0) || (ao.fileList.length === 0 && ao.folderList.length === 0))
+    // 某页缺字段时不能直接访问 length（防御 API 抖动把整库扫描打挂）
+    if (
+      out.length >= (ao.count ?? 0) ||
+      ((ao.fileList?.length ?? 0) === 0 && (ao.folderList?.length ?? 0) === 0)
+    ) {
       break
+    }
   }
   return out
 }

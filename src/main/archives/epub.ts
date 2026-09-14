@@ -2,6 +2,7 @@ import { posix } from 'path'
 import StreamZip from 'node-stream-zip'
 import { XMLParser } from 'fast-xml-parser'
 import { isImageFile, longPath, naturalCompare } from '../util/paths'
+import { MAX_ARCHIVE_ENTRY_BYTES } from './types'
 import type { ArchiveDriver, PageEntry } from './types'
 
 const xmlParser = new XMLParser({
@@ -57,6 +58,8 @@ function extractImageSrcs(html: string): string[] {
  */
 export class EpubDriver implements ArchiveDriver {
   private pages: PageEntry[] = []
+  /** 全部条目的声明尺寸（防解压炸弹） */
+  private allSizes = new Map<string, number>()
   /** OPF 元数据（dc:title / dc:creator），供扫描入系列；解析失败为空 */
   readonly metadata: { title?: string; author?: string } = {}
   private zip!: StreamZip.StreamZipAsync
@@ -69,7 +72,10 @@ export class EpubDriver implements ArchiveDriver {
     const entries = await driver.zip.entries()
     const entryMap = new Map<string, { size: number }>()
     for (const [name, e] of Object.entries(entries)) {
-      if (!e.isDirectory) entryMap.set(name, { size: e.size })
+      if (!e.isDirectory) {
+        entryMap.set(name, { size: e.size })
+        driver.allSizes.set(name, e.size)
+      }
     }
 
     let pages: PageEntry[] = []
@@ -98,12 +104,17 @@ export class EpubDriver implements ArchiveDriver {
   async readPage(index: number): Promise<Buffer> {
     const page = this.pages[index]
     if (!page) throw new Error(`页码越界：${index}`)
+    // 声明尺寸超限直接拒绝（同 ZipDriver：entryData 无增量上限）
+    if (page.size > MAX_ARCHIVE_ENTRY_BYTES) {
+      throw new Error(`条目过大（${page.size} 字节）：${page.name}`)
+    }
     const data = await this.zip.entryData(page.name)
     return Buffer.from(data)
   }
 
   async readEntry(name: string): Promise<Buffer | null> {
     try {
+      if ((this.allSizes.get(name) ?? 0) > MAX_ARCHIVE_ENTRY_BYTES) return null
       return Buffer.from(await this.zip.entryData(name))
     } catch {
       return null
@@ -125,14 +136,22 @@ async function collectSpinePages(
   zip: StreamZip.StreamZipAsync,
   entryMap: Map<string, { size: number }>
 ): Promise<SpineResult> {
+  // 元数据文本也过尺寸闸（恶意的巨型 xhtml 同样能打爆内存）
+  const readText = async (name: string): Promise<string> => {
+    if ((entryMap.get(name)?.size ?? 0) > MAX_ARCHIVE_ENTRY_BYTES) {
+      throw new Error(`条目过大：${name}`)
+    }
+    return (await zip.entryData(name)).toString('utf-8')
+  }
+
   // container.xml → OPF 路径
-  const containerXml = await zip.entryData('META-INF/container.xml')
-  const container = xmlParser.parse(containerXml.toString('utf-8'))
+  const containerXml = await readText('META-INF/container.xml')
+  const container = xmlParser.parse(containerXml)
   const rootfile = asArray(container?.container?.rootfiles?.rootfile)[0]
   const opfPath = typeof rootfile?.['@_full-path'] === 'string' ? rootfile['@_full-path'] : ''
   if (!opfPath) throw new Error('container.xml 缺少 rootfile')
 
-  const opf = xmlParser.parse((await zip.entryData(opfPath)).toString('utf-8'))
+  const opf = xmlParser.parse(await readText(opfPath))
   const meta = opf?.package?.metadata
   const result: SpineResult = {
     pages: [],
@@ -165,7 +184,7 @@ async function collectSpinePages(
     } else if (/xhtml|html/i.test(item.mediaType)) {
       const docName = resolveZipPath(opfDir, item.href)
       if (!entryMap.has(docName)) continue
-      const html = (await zip.entryData(docName)).toString('utf-8')
+      const html = await readText(docName)
       const docDir = posixDirname(docName)
       for (const src of extractImageSrcs(html)) {
         pushPage(resolveZipPath(docDir, src))

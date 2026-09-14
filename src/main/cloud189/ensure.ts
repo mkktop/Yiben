@@ -10,7 +10,7 @@ import { ensureCached } from './cache'
 import { dropRemoteZip, getRemoteZip } from './remoteZipManager'
 import { ensure115ChapterPage, ensure115LocalPath, read115EnsuredPage } from '../cloud115/reader'
 import { broadcast } from '../events'
-import { archiveKindOf, longPath } from '../util/paths'
+import { archiveKindOf, longPath, sanitizeFileName } from '../util/paths'
 
 export interface EnsureResult {
   chapterId: number
@@ -47,7 +47,12 @@ export async function ensureChapterPage(
   if (ch.kind === 'cfolder') {
     const page = getChapterPageFile(chapterId, pageIndex)
     if (!page) throw new Error(`页码越界：${pageIndex}`)
-    const dest = join(cloudCacheDir(), `f-${chapterId}`, `${String(pageIndex).padStart(5, '0')}-${page.name}`)
+    // 网盘侧文件名不可信：清洗后才允许 join 进缓存子目录（防 \ 分隔符/.. 逃逸）
+    const dest = join(
+      cloudCacheDir(),
+      `f-${chapterId}`,
+      `${String(pageIndex).padStart(5, '0')}-${sanitizeFileName(page.name)}`
+    )
     await ensureCached(page.file_id, familyId, dest, page.size, undefined, signal)
     return { chapterId, path: dest, kind: 'file', pageCount: ch.page_count }
   }

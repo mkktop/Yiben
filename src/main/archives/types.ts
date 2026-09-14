@@ -1,3 +1,9 @@
+/**
+ * 单条目解压上限（本地与云端归档共用防线）：网上下载的漫画压缩包是不可信输入，
+ * 高压缩比 zip/rar bomb 可把主进程 OOM。驱动按声明尺寸拦截 + 协议层按实际产出兜底。
+ */
+export const MAX_ARCHIVE_ENTRY_BYTES = 200 * 1024 * 1024
+
 export interface PageEntry {
   name: string
   size: number

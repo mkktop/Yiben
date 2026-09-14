@@ -22,11 +22,15 @@ export function PdfViewer({ info, initialPage, onCurrentPage }: PdfViewerProps) 
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null)
   const [error, setError] = useState('')
   const [colWidth, setColWidth] = useState(760)
+  const loadingTask = useRef<pdfjsLib.PDFDocumentLoadingTask | null>(null)
 
   const chapterId = info.chapter.id
 
   useEffect(() => {
-    let doc: pdfjsLib.PDFDocumentProxy | null = null
+    // 切话竞态防护：加载在途时切走（卸载/换章节），闭包里的异步照跑，
+    // setPdf 会把旧话文档写进新话、setState 把旧话页数写进新话的 store
+    // （atLastScreen 可能因此误判「已读完」落库）。loadingTask.destroy 同时中断在途加载。
+    let cancelled = false
     setError('')
     void (async () => {
       try {
@@ -43,23 +47,27 @@ export function PdfViewer({ info, initialPage, onCurrentPage }: PdfViewerProps) 
           data = new Uint8Array(buf)
         }
         // pdf.js 会 transfer 缓冲区，data 本身已是独立拷贝
-        doc = await pdfjsLib.getDocument({ data }).promise
+        const task = pdfjsLib.getDocument({ data })
+        loadingTask.current = task
+        const doc = await task.promise
+        if (cancelled) return
         setPdf(doc)
         useReaderStore.setState({ pageCount: doc.numPages })
         // 主进程驱动层不解析 PDF，页数由这里回填进数据库
         void window.yiben.reader
           .setPageCount(chapterId, doc.numPages)
           .then((changed) => {
-            if (changed) useDataStore.getState().bump()
+            if (changed && !cancelled) useDataStore.getState().bump()
           })
           .catch(() => {})
       } catch (err) {
-        setError(errorMessage(err))
+        if (!cancelled) setError(errorMessage(err))
       }
     })()
     return () => {
-      if (doc) void doc.cleanup()
-      setPdf(null)
+      cancelled = true
+      loadingTask.current?.destroy().catch(() => {})
+      loadingTask.current = null
     }
   }, [chapterId])
 

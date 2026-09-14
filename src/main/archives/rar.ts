@@ -1,6 +1,7 @@
 import { readFile } from 'fs/promises'
 import { createExtractorFromData } from 'node-unrar-js'
 import { isImageFile, longPath, naturalCompare } from '../util/paths'
+import { MAX_ARCHIVE_ENTRY_BYTES } from './types'
 import type { ArchiveDriver, PageEntry } from './types'
 
 type Extractor = Awaited<ReturnType<typeof createExtractorFromData>>
@@ -37,6 +38,10 @@ export class RarDriver implements ArchiveDriver {
   async readPage(index: number): Promise<Buffer> {
     const name = this.names[index]
     if (!name) throw new Error(`页码越界：${index}`)
+    // 声明尺寸超限直接拒绝：wasm 解压同样没有增量上限，炸弹会整段膨胀
+    if ((this.sizes.get(name) ?? 0) > MAX_ARCHIVE_ENTRY_BYTES) {
+      throw new Error(`条目过大（${this.sizes.get(name)} 字节）：${name}`)
+    }
     const extracted = this.extractor.extract({ files: [name] })
     const files = [...extracted.files]
     const file = files[0]
@@ -46,6 +51,7 @@ export class RarDriver implements ArchiveDriver {
 
   async readEntry(name: string): Promise<Buffer | null> {
     try {
+      if ((this.sizes.get(name) ?? 0) > MAX_ARCHIVE_ENTRY_BYTES) return null
       const file = [...this.extractor.extract({ files: [name] }).files][0]
       return file?.extraction ? Buffer.from(file.extraction) : null
     } catch {

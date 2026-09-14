@@ -97,6 +97,19 @@ export const useReaderStore = create<ReaderState>((set, get) => ({
 }))
 
 /**
+ * patch 并按系列落盘：fit/rotate/rtl 等用户意图改动必须两条都做——
+ * 只 patch 不落盘的话切话/重启即回退（prefs 里的字段变成死数据），
+ * 键盘与顶栏按钮两个入口共用这里，行为不再分叉。
+ * window 判空：本模块在 node 环境的 store 单测里也会被加载。
+ */
+export function patchReaderPrefs(seriesId: number, prefs: ReaderPrefs): void {
+  useReaderStore.getState().patch(prefs)
+  if (seriesId > 0 && typeof window !== 'undefined') {
+    void window.yiben.reader.setPrefs(seriesId, prefs).catch(() => {})
+  }
+}
+
+/**
  * 页码钳位。
  * pageCount 为 0 表示页数未知（未回填的云端压缩包/PDF）：此时不做上界钳位，
  * 否则会把页码压到 0 甚至 -1，导致协议层「页码越界」。

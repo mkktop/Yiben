@@ -93,3 +93,18 @@ export async function readDirEntries(dir: string): Promise<DirEntry[]> {
 export function joinPath(dir: string, name: string): string {
   return join(dir, name)
 }
+
+/**
+ * 清洗云端文件名用于本地缓存路径：网盘目录列举出的名字是不可信输入，
+ * 含路径分隔符（\ /）会逃出缓存子目录，Windows 保留字符/控制字符会导致写盘失败
+ */
+export function sanitizeFileName(name: string): string {
+  const base = name.split(/[\\/]/).pop() ?? name
+  const clean = base
+    // 控制字符与 Windows 文件名保留字符
+    .replace(/[\x00-\x1f<>:"|?*]/g, '_')
+    // 结尾的点/空格在 Windows 上会被剥掉，导致同名文件互相覆盖索引键
+    .replace(/[. ]+$/, '')
+    .slice(0, 120)
+  return clean || 'file'
+}

@@ -51,6 +51,27 @@ function isVolumeChildren(children: CloudEntry[]): boolean {
 }
 
 /**
+ * 限并发列举：wrapper 目录判定原来用 Promise.all 全量并发，
+ * 大库一次就能同时压出几十个列表请求（风控敏感的 burst 形态）
+ */
+async function listAllLimited(
+  ids: string[],
+  list: (id: string) => Promise<CloudEntry[]>,
+  limit = 2
+): Promise<CloudEntry[][]> {
+  const out: CloudEntry[][] = new Array(ids.length)
+  let next = 0
+  const workers = Array.from({ length: Math.min(limit, ids.length) }, async () => {
+    while (next < ids.length) {
+      const i = next++
+      out[i] = await list(ids[i])
+    }
+  })
+  await Promise.all(workers)
+  return out
+}
+
+/**
  * 扫描云盘目录。自动识别两种布局：
  *  - 单系列：用户直接添加某部漫画的文件夹（根下全是卷文件夹/同名嵌套文件夹/分卷压缩包）→ 整个库根作为一个系列
  *  - 多系列：根下每个文件夹是一部作品（内部再分章节），根下压缩包各自成单文件系列
@@ -86,7 +107,7 @@ export async function scanCloudLibrary(
       const isWrapper =
         subDirs.length > 0 &&
         subDirs.length === children.length &&
-        (await Promise.all(subDirs.map((s) => list(s.id)))).every((c) => isVolumeChildren(c))
+        (await listAllLimited(subDirs.map((s) => s.id), list)).every((c) => isVolumeChildren(c))
       dirKind.set(d.id, isWrapper ? 'wrapper' : 'series')
     }
   }
