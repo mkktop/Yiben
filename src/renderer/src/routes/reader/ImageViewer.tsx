@@ -14,8 +14,9 @@ interface ImageViewerProps {
   onCurrentPage?: (page: number) => void
   /** 条漫模式回报视口归属话（软切换进度用） */
   onPosition?: (pos: StripPos) => void
-  /** 条漫滚到底部再往下时由外层接管（进下一话） */
+  /** 末屏再往后：进下一话；首页再往前：回上一话末页（单双页点击区、条漫滚动底共用） */
   onNext?: () => void
+  onPrev?: () => void
 }
 
 /** 失败重试间隔：1s → 4s（指数退避），共 2 次后转手动重试 */
@@ -101,8 +102,13 @@ function PageImage({
   )
 }
 
-/** 单页 / 双页（RTL）模式的图片视口：点击区只在章节内翻页，不跨话 */
-export const ImageViewer = memo(function ImageViewer({ chapterId, seriesId }: ImageViewerProps) {
+/** 单页 / 双页（RTL）模式的图片视口：点击区翻页，末屏点击自然过渡到前后话 */
+export const ImageViewer = memo(function ImageViewer({
+  chapterId,
+  seriesId,
+  onNext,
+  onPrev
+}: ImageViewerProps) {
   // 选择器订阅：整库解构会让无关状态（immersive/thumbs 等）变化时也整树 reconcile
   const mode = useReaderStore((s) => s.mode)
   const fit = useReaderStore((s) => s.fit)
@@ -118,8 +124,30 @@ export const ImageViewer = memo(function ImageViewer({ chapterId, seriesId }: Im
   const setPage = useReaderStore((s) => s.setPage)
   const containerRef = useRef<HTMLDivElement>(null)
 
+  /** 缩放锚点：ux/uy 是锚点在跨页布局坐标里的位置（连 m-auto 居中的边距一起
+   *  实测进去），cx/cy 是锚点在视口内的落点；DOM 更新后把同一内容点拉回原地 */
+  const zoomAnchorRef = useRef<{ ux: number; uy: number; cx: number; cy: number } | null>(null)
+  const pairRef = useRef<HTMLDivElement | null>(null)
+  const prevZoomRef = useRef(zoom)
+  const layoutSizedRef = useRef(false)
+
   const applyZoom = useCallback(
-    (next: number) => {
+    (next: number, cxIn?: number, cyIn?: number) => {
+      const el = containerRef.current
+      const pair = pairRef.current
+      zoomAnchorRef.current = null
+      if (el && pair && layoutSizedRef.current) {
+        const cx = cxIn ?? el.clientWidth / 2
+        const cy = cyIn ?? el.clientHeight / 2
+        const pr = pair.getBoundingClientRect()
+        const cr = el.getBoundingClientRect()
+        zoomAnchorRef.current = {
+          ux: cx - (pr.left - cr.left),
+          uy: cy - (pr.top - cr.top),
+          cx,
+          cy
+        }
+      }
       const z = Math.min(4, Math.max(0.5, Math.round(next * 1000) / 1000))
       const s = useReaderStore.getState()
       if (z === s.zoom) return
@@ -128,6 +156,21 @@ export const ImageViewer = memo(function ImageViewer({ chapterId, seriesId }: Im
     },
     [seriesId]
   )
+
+  // 缩放后（DOM 已更新、上屏前）按锚点补偿滚动：内容按 k=新/旧 缩放，
+  // 把锚点处的内容点留在锚点屏幕位置。仅布局级缩放路径有锚
+  // （原始尺寸适配走 transform，维持原行为）
+  useLayoutEffect(() => {
+    const el = containerRef.current
+    const a = zoomAnchorRef.current
+    const old = prevZoomRef.current
+    prevZoomRef.current = zoom
+    zoomAnchorRef.current = null
+    if (!el || !a || old === zoom || old <= 0) return
+    const k = zoom / old
+    el.scrollLeft = Math.max(0, a.ux * k - a.cx)
+    el.scrollTop = Math.max(0, a.uy * k - a.cy)
+  }, [zoom])
 
   // 缩放跟随翻页/切话保持；只在换适配方式/阅读模式时复位（缩放语义变了）。
   // 组件因 key 切话重挂载，prevLayout 初值为 null：首挂载不复位，偏好恢复的缩放才能生效
@@ -138,7 +181,8 @@ export const ImageViewer = memo(function ImageViewer({ chapterId, seriesId }: Im
     prevLayout.current = key
   }, [mode, fit, applyZoom])
 
-  // Ctrl/⌘ + 滚轮缩放（监听器只挂一次，读 zoomRef 避免闭包过期）
+  // Ctrl/⌘ + 滚轮缩放（监听器只挂一次，读 zoomRef 避免闭包过期）；
+  // 以光标位置为锚点——指哪放大哪
   const zoomRef = useRef(zoom)
   zoomRef.current = zoom
   useEffect(() => {
@@ -147,63 +191,131 @@ export const ImageViewer = memo(function ImageViewer({ chapterId, seriesId }: Im
     const onWheel = (e: WheelEvent): void => {
       if (!e.ctrlKey && !e.metaKey) return
       e.preventDefault()
-      applyZoom(zoomRef.current + (e.deltaY > 0 ? -0.1 : 0.1))
+      const rect = el.getBoundingClientRect()
+      applyZoom(
+        zoomRef.current + (e.deltaY > 0 ? -0.1 : 0.1),
+        e.clientX - rect.left,
+        e.clientY - rect.top
+      )
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
   }, [applyZoom])
 
+  // 放大后按住左键拖动平移（滚轮之外的第二种平移方式）。
+  // 移动超过阈值视为拖拽并吞掉随后的 click——否则拖完一松手顺手翻了页
+  const dragRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null)
+  const dragMovedRef = useRef(false)
+  const onMouseDown = (e: React.MouseEvent): void => {
+    dragMovedRef.current = false
+    if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return
+    const el = containerRef.current
+    if (!el) return
+    dragRef.current = { x: e.clientX, y: e.clientY, left: el.scrollLeft, top: el.scrollTop }
+    e.preventDefault()
+  }
+  useEffect(() => {
+    const onMove = (e: MouseEvent): void => {
+      const d = dragRef.current
+      const el = containerRef.current
+      if (!d || !el) return
+      const dx = e.clientX - d.x
+      const dy = e.clientY - d.y
+      if (!dragMovedRef.current && Math.abs(dx) < 5 && Math.abs(dy) < 5) return
+      dragMovedRef.current = true
+      el.scrollLeft = d.left - dx
+      el.scrollTop = d.top - dy
+    }
+    const onUp = (): void => {
+      dragRef.current = null
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
+
   const pagesToShow =
     mode === 'double' ? spreadPages(page, pageCount, rtl, widePages, spreadOffset) : [page]
   const isDouble = pagesToShow.length > 1
 
-  // 双页永远并排；单页按适配方式铺排
-  const layoutClass = isDouble
-    ? 'flex h-full w-full items-center justify-center gap-0'
-    : fit === 'width'
-      ? 'flex w-full flex-col items-center'
-      : 'flex h-full items-center justify-center'
+  // 双页两张图是一个整体：中缝无缝、缩放也不拆开。缩放统一放在包裹层按布局
+  // 尺寸撑开（适高按高度、适宽按宽度；单页 width/height 适配同走这条路），
+  // per-image transform 会绕各自中心放大——双页裂缝、且滚动区不含左/上溢出；
+  // 只有单页「原始尺寸」保留 transform 缩放
+  const layoutSized = isDouble || fit !== 'original'
+  layoutSizedRef.current = layoutSized
 
-  const imgStyle: React.CSSProperties = {
+  const fitImgStyle: React.CSSProperties = {
+    transform: `rotate(${rotate}deg)`,
+    transition: 'transform 120ms ease-out',
+    flexShrink: 0,
+    ...(fit === 'height'
+      ? { height: '100%', width: 'auto' }
+      : { width: isDouble ? '50%' : '100%', height: 'auto' })
+  }
+  const fitStyle: React.CSSProperties =
+    fit === 'height' ? { height: `${zoom * 100}%` } : { width: `${zoom * 100}%` }
+
+  const originalImgStyle: React.CSSProperties = {
     transform: `rotate(${rotate}deg) scale(${zoom})`,
     transition: 'transform 120ms ease-out',
-    ...(isDouble
-      ? fit === 'height'
-        ? { height: '100%', width: 'auto', maxWidth: '50%', objectFit: 'contain' as const }
-        : { width: '50%', height: 'auto', maxHeight: '100%', objectFit: 'contain' as const }
-      : fit === 'width'
-        ? { width: '100%', height: 'auto' }
-        : fit === 'height'
-          ? { height: '100%', width: 'auto' }
-          : { maxHeight: '100%', maxWidth: '100%', objectFit: 'contain' as const })
+    maxHeight: '100%',
+    maxWidth: '100%',
+    objectFit: 'contain' as const
   }
 
   return (
     <div
       ref={containerRef}
-      className="relative flex h-full w-full items-center justify-center overflow-auto"
+      className="relative flex h-full w-full cursor-grab overflow-auto active:cursor-grabbing"
+      onMouseDown={onMouseDown}
       onClick={(e) => {
-        // 左 1/3 上一页，右 1/3 下一页（RTL 时方向相反）；只在章节内翻页，
-        // 跨话走顶栏按钮 / 末页卡片 / 键盘（store 的 next/prev 自带钳位）
+        // 刚结束的拖拽平移不算点击，不翻页
+        if (dragMovedRef.current) {
+          dragMovedRef.current = false
+          return
+        }
+        // 左 1/3 上一页，右 1/3 下一页（RTL 时方向相反）；末屏再翻由外层
+        // 越界接管进前后话（goNext/goPrev），没有外层入口时退回章节内钳位
         const x = e.clientX / window.innerWidth
         const forward = rtl ? x < 0.33 : x > 0.66
         const back = rtl ? x > 0.66 : x < 0.33
-        if (forward) next()
-        else if (back) prev()
+        if (forward) (onNext ?? next)()
+        else if (back) (onPrev ?? prev)()
       }}
     >
-      <div className={layoutClass}>
-        {pagesToShow.map((p) => (
+      {/* 居中交给 m-auto：内容小于视口时居中；大于视口时 auto 边距归零、靠齐
+          起点，四个方向的溢出都落在滚动范围内（items/justify-center 会把左/上
+          溢出留在滚不到的位置——拖动范围缩水、显示不全的根因）。
+          shrink-0 禁止 flex 收缩，否则放大超过视口后被压回、Zoom 失效 */}
+      {layoutSized ? (
+        <div ref={pairRef} className="m-auto flex shrink-0 items-center" style={fitStyle}>
+          {pagesToShow.map((p) => (
+            <PageImage
+              key={p}
+              src={pageUrl(chapterId, p)}
+              alt={`第 ${p + 1} 页`}
+              eager
+              style={fitImgStyle}
+              className="select-none"
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="flex h-full w-full items-center justify-center">
           <PageImage
-            key={p}
-            src={pageUrl(chapterId, p)}
-            alt={`第 ${p + 1} 页`}
+            key={pagesToShow[0]}
+            src={pageUrl(chapterId, pagesToShow[0])}
+            alt={`第 ${pagesToShow[0] + 1} 页`}
             eager
-            style={imgStyle}
+            style={originalImgStyle}
             className="select-none"
           />
-        ))}
-      </div>
+        </div>
+      )}
 
       {/* 悬浮缩放控制（右下，避开顶栏） */}
       <div className="absolute bottom-10 right-4 flex gap-1 rounded-lg bg-black/60 p-1 backdrop-blur">
@@ -278,10 +390,19 @@ export const WebtoonViewer = memo(function WebtoonViewer({
    *  放大后图片按新显示尺寸重新解码，细节不糊（transform 只会拉伸已解码位图）。
    *  缩放值放 store 并按系列持久化：翻页/切话/跨话拼接都保持 */
   const stripRef = useRef<HTMLDivElement>(null)
-  const pendingAnchor = useRef<{ el: HTMLElement; intra: number; centerX: number; oldW: number } | null>(null)
+  const pendingAnchor = useRef<{
+    el: HTMLElement
+    intra: number
+    oldW: number
+    contentX: number
+    viewX: number
+    viewY: number
+  } | null>(null)
 
-  /** 缩放前抓锚点：视口中心落在条带的哪个子元素内、相对高度多少、内容 x 坐标多少 */
-  const zoomTo = (next: number): void => {
+  /** 缩放前抓锚点：锚点（光标，缺省视口中心）落在条带的哪个子元素内、
+   *  相对高度多少、内容坐标多少；viewX/viewY 是锚点在视口内的落点，
+   *  缩放后把同一内容点拉回这个位置 */
+  const zoomTo = (next: number, px?: number, py?: number): void => {
     const el = ref.current
     const strip = stripRef.current
     if (!el || !strip) return
@@ -290,21 +411,25 @@ export const WebtoonViewer = memo(function WebtoonViewer({
     if (z === s.zoom) return
     const elRect = el.getBoundingClientRect()
     const stripRect = strip.getBoundingClientRect()
-    const centerX = elRect.left + el.clientWidth / 2 - stripRect.left
-    const centerY = elRect.top + el.clientHeight / 2 - stripRect.top
-    // 找包含视口中线的子元素（找不到就停在条带根部，锚定退化为按比例）
+    const anchorX = px ?? elRect.left + el.clientWidth / 2
+    const anchorY = py ?? elRect.top + el.clientHeight / 2
+    const contentX = anchorX - stripRect.left
+    const contentY = anchorY - stripRect.top
+    const viewX = anchorX - elRect.left
+    const viewY = anchorY - elRect.top
+    // 找包含锚点的子元素（找不到就停在条带根部，锚定退化为按比例）
     let anchor: HTMLElement = strip
     let intra = 0
     for (const k of Array.from(strip.children) as HTMLElement[]) {
       const r = k.getBoundingClientRect()
       const top = r.top - stripRect.top
-      if (r.height > 0 && centerY >= top && centerY <= top + r.height) {
+      if (r.height > 0 && contentY >= top && contentY <= top + r.height) {
         anchor = k
-        intra = (centerY - top) / r.height
+        intra = (contentY - top) / r.height
         break
       }
     }
-    pendingAnchor.current = { el: anchor, intra, centerX, oldW: strip.offsetWidth }
+    pendingAnchor.current = { el: anchor, intra, oldW: strip.offsetWidth, contentX, viewX, viewY }
     s.patch({ zoom: z })
     persistZoom(seriesId, z)
   }
@@ -324,11 +449,11 @@ export const WebtoonViewer = memo(function WebtoonViewer({
     const ratio = a.oldW > 0 ? strip.offsetWidth / a.oldW : 1
     el.scrollLeft = Math.max(
       0,
-      Math.min(el.scrollWidth - el.clientWidth, a.centerX * ratio - el.clientWidth / 2)
+      Math.min(el.scrollWidth - el.clientWidth, a.contentX * ratio - a.viewX)
     )
     const stripRect = strip.getBoundingClientRect()
     const r = a.el.getBoundingClientRect()
-    el.scrollTop = r.top - stripRect.top + a.intra * r.height - el.clientHeight / 2
+    el.scrollTop = r.top - stripRect.top + a.intra * r.height - a.viewY
   }, [zoom])
 
   /** 拼接进来的后续话（key 重挂后必为空起步） */
@@ -452,10 +577,14 @@ export const WebtoonViewer = memo(function WebtoonViewer({
     }
     const onWheel = (e: WheelEvent): void => {
       if (e.ctrlKey) {
-        // Ctrl+滚轮缩放（触控板双指捏合也以 ctrlKey wheel 派发），中心锚定；
+        // Ctrl+滚轮缩放（触控板双指捏合也以 ctrlKey wheel 派发），光标锚定；
         // 必须 preventDefault，否则 Electron 窗口会做整页缩放
         e.preventDefault()
-        zoomToRef.current(useReaderStore.getState().zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1))
+        zoomToRef.current(
+          useReaderStore.getState().zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1),
+          e.clientX,
+          e.clientY
+        )
         return
       }
       if (e.deltaY <= 0 || !atBottom.current) return

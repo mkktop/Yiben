@@ -15,11 +15,10 @@ import {
   X,
   type LucideIcon
 } from 'lucide-react'
-import { useReaderStore, spreadPages, atLastScreen, patchReaderPrefs, type ReaderMode } from '@/stores/reader'
+import { useReaderStore, spreadPages, patchReaderPrefs, type ReaderMode } from '@/stores/reader'
 import { pageThumbUrl, type BookmarkInfo } from '@shared/types'
 import { cn } from '@/lib/utils'
 import { WindowControls } from '@/components/layout/WindowControls'
-import { Button } from '@/components/ui/button'
 import { KeyboardHelp } from './KeyboardHelp'
 import type { ReaderHint } from './ReaderPage'
 
@@ -41,7 +40,7 @@ export interface ReaderChromeProps {
   isFullscreen: boolean
   toggleFullscreen: () => void
   onModeChange: (m: ReaderMode) => void
-  /** 直接跳前后话（顶栏按钮/末页卡片用） */
+  /** 直接跳前后话（顶栏按钮用） */
   onNextChapter: () => void
   onPrevChapter: () => void
   neighbors: { index: number; total: number; prev: NeighborChapter | null; next: NeighborChapter | null } | null
@@ -52,8 +51,6 @@ export interface ReaderChromeProps {
   onJump: (chapterId: number, page0: number) => void
   /** 返回（ReaderPage 持有，带兜底逻辑） */
   onBack: () => void
-  /** 条漫跨话拼接：下一话已在同一条带里，末页提示卡不再展示 */
-  hideEndCard?: boolean
   /** 跨页配对切换（C 键与顶栏按钮共用） */
   onToggleSpreadOffset: () => void
   /** 底部提示浮层（阅读方向 / 跨页配对反馈），ReaderPage 持有状态 */
@@ -73,7 +70,7 @@ const MODES: Array<{ key: ReaderMode; label: string; icon: LucideIcon }> = [
 /**
  * memo：ReaderPage 订阅 page（进度写入需要），每次跨页都会重渲染，
  * Chrome 的 props 不含 page，memo 后整棵工具栏跳过 reconcile——
- * 页码/进度条/末页卡/缩略图条由下面几个自订阅小组件各自更新。
+ * 页码/进度条/缩略图条由下面几个自订阅小组件各自更新。
  */
 export const ReaderChrome = memo(function ReaderChrome({
   chapterId,
@@ -96,8 +93,7 @@ export const ReaderChrome = memo(function ReaderChrome({
   hint,
   onHintClose,
   panel,
-  onPanelChange,
-  hideEndCard
+  onPanelChange
 }: ReaderChromeProps) {
   // 细粒度订阅：顶栏只关心自己展示/操作的字段，避免跟随无关状态整树 reconcile。
   // page/pageCount/widePages 不在这里订阅（下放给自订阅的展示组件）
@@ -238,13 +234,7 @@ export const ReaderChrome = memo(function ReaderChrome({
         ))}
       </div>
 
-      {/* 末页提示卡 + 底部进度条 + 缩略图条（均自订阅 page/pageCount） */}
-      <EndCard
-        neighbors={neighbors}
-        hideEndCard={hideEndCard}
-        onNextChapter={onNextChapter}
-        onBack={onBack}
-      />
+      {/* 底部进度条 + 缩略图条（均自订阅 page/pageCount）；末屏不插卡片，翻页/点击直接跨话 */}
       <ProgressStrip />
       {showThumbs && canThumbnail && (
         <ThumbStrip chapterId={chapterId} bookmarks={bookmarks} onJump={onJump} />
@@ -328,46 +318,6 @@ function PageJumpChip({
     mode === 'webtoon' || lo === hi ? `${page + 1} / ${pageCount}` : `${lo}-${hi} / ${pageCount}`
   return <PageJump display={display} page={page} onJump={(page0) => onJump(chapterId, page0)} />
 }
-
-/** 末页提示卡：居中卡片，直接进下一话（键盘/点击继续翻页也会自动进入）；
-    条漫跨话拼接时下一话已在同一条带里，卡就不必再出现 */
-const EndCard = memo(function EndCard({
-  neighbors,
-  hideEndCard,
-  onNextChapter,
-  onBack
-}: {
-  neighbors: { prev: NeighborChapter | null; next: NeighborChapter | null } | null
-  hideEndCard?: boolean
-  onNextChapter: () => void
-  onBack: () => void
-}) {
-  const page = useReaderStore((s) => s.page)
-  const pageCount = useReaderStore((s) => s.pageCount)
-  const mode = useReaderStore((s) => s.mode)
-  const widePages = useReaderStore((s) => s.widePages)
-  const spreadOffset = useReaderStore((s) => s.spreadOffset)
-  // 与 ReaderPage.goNext 的边界判定共用同一函数：卡片出现的时机 = 翻页会进下一话的时机
-  const atEnd = atLastScreen(page, pageCount, mode, widePages, spreadOffset)
-  if (!atEnd || !neighbors?.next || hideEndCard) return null
-  return (
-    <div className="absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2">
-      <div className="animate-scale-in w-80 max-w-[calc(100vw-1.5rem)] rounded-2xl border border-border/50 bg-background/80 p-5 text-center text-foreground shadow-lg backdrop-blur-md">
-        <p className="text-[11px] font-medium tracking-[0.25em] text-muted-foreground">本话完</p>
-        <p className="mt-1.5 truncate text-sm font-semibold">{neighbors.next.title}</p>
-        <div className="mt-4 flex items-center gap-2">
-          <Button className="flex-1" onClick={onNextChapter}>
-            进入下一话
-            <ChevronRight />
-          </Button>
-          <Button variant="ghost" className="flex-1" onClick={onBack}>
-            返回书架
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-})
 
 /** 底部进度条（自订阅） */
 function ProgressStrip() {

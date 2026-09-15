@@ -3,11 +3,13 @@ import type { AppUpdater } from 'electron-updater'
 import { broadcast } from './events'
 import { cleanNotes, newerVersion } from './updateNotes'
 
-// ---- 应用内更新（GitHub Releases，仅打包版；公共仓库无需 token）----
+// ---- 应用内更新（R2 渠道 yiben.kaikun.top，仅打包版；GitHub Release 仅作发布页镜像）----
 // 交互模型：检查 -> 用户点「下载更新」（有进度条）-> 用户点「立即重启」。
 // 不自动下载：安装包上百 MB，静默下载既耗流量又会在用户不知情时弹窗打断。
 // 下载源配置不写死在代码里：electron-builder 打包时把 package.json 的 publish
 // 段生成 resources/app-update.yml，electron-updater 运行时自读。
+// 渠道切换（v0.2.2 起）：publish 段已切 generic 指向 R2 自定义域，老版本（GitHub 渠道）
+// 不受影响，装上新版后即走 R2；CI 在传完 GitHub Release 后把 exe + latest.yml 推到桶里。
 
 let updaterBusy = false
 let downloadBusy = false

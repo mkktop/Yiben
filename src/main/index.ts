@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, screen, dialog } from 'electron'
+import { app, shell, BrowserWindow, screen, dialog, globalShortcut } from 'electron'
 import { join } from 'path'
 import { writeFile } from 'fs/promises'
 import { is } from '@electron-toolkit/utils'
@@ -23,11 +23,12 @@ app.on('open-file', (_e, path) => handleFilePath(path))
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  // 第二个实例启动时：把已有窗口拉到前台，并接手它带来的文件参数
+  // 第二个实例启动时：把已有窗口拉到前台（含老板键隐藏中的），并接手它带来的文件参数
   app.on('second-instance', (_e, argv) => {
     const win = BrowserWindow.getAllWindows()[0]
     if (win) {
       if (win.isMinimized()) win.restore()
+      if (!win.isVisible()) win.show()
       win.focus()
     }
     handleArgv(argv)
@@ -77,6 +78,67 @@ function bootstrap(): void {
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
   })
+
+  // 老板键是全局热键：应用退出必须注销，否则热键被残留注册占死
+  app.on('will-quit', () => {
+    globalShortcut.unregisterAll()
+  })
+}
+
+// ---------- 老板键 ----------
+// 全局热键（焦点不在应用上也生效）：按一下立即隐藏窗口，再按恢复。
+// 隐藏比最小化更彻底——任务栏不缩略、Alt+Tab 不露出（恢复走热键或重启应用）
+
+// 主候选按序取第一个空闲的；Ctrl+Alt+X 一并注册为别名——右 Alt（AltGr）会被
+// Windows 翻译成 Ctrl+Alt，左/右 Alt 按下都能触发同一回调
+const BOSS_KEY_CANDIDATES = ['Alt+X', 'Alt+B', 'Control+Alt+B']
+const BOSS_KEY_ALIAS = 'Control+Alt+X'
+let bossWindow: BrowserWindow | null = null
+let lastBossToggleAt = 0
+
+function toggleBossHide(): void {
+  // 长按时系统键盘自动重复会连发 WM_HOTKEY，窗口在隐藏/恢复间抖动、
+  // 终态随奇偶随机（表现为「按了没隐藏」）——leading 防抖折叠成一次切换
+  const now = Date.now()
+  if (now - lastBossToggleAt < 400) return
+  lastBossToggleAt = now
+  const win = bossWindow
+  if (!win || win.isDestroyed()) return
+  if (win.isVisible() && !win.isMinimized()) {
+    console.log('[bosskey] 触发: 隐藏窗口')
+    win.hide()
+  } else {
+    console.log('[bosskey] 触发: 恢复窗口')
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  }
+}
+
+function registerBossKey(win: BrowserWindow): void {
+  bossWindow = win
+  for (const acc of BOSS_KEY_CANDIDATES) {
+    try {
+      if (globalShortcut.register(acc, toggleBossHide)) {
+        console.log('[bosskey] 已注册主热键:', acc)
+        if (acc !== BOSS_KEY_ALIAS) {
+          try {
+            if (globalShortcut.register(BOSS_KEY_ALIAS, toggleBossHide)) {
+              console.log('[bosskey] 已注册别名热键:', BOSS_KEY_ALIAS, '（右 Alt/AltGr 兼容）')
+            } else {
+              console.warn('[bosskey] 别名热键被占用:', BOSS_KEY_ALIAS)
+            }
+          } catch {
+            /* 别名注册失败不影响主热键 */
+          }
+        }
+        return
+      }
+    } catch {
+      /* 加速键非法或系统拒绝，试下一个候选 */
+    }
+  }
+  console.warn('[bosskey] 候选热键全部注册失败:', BOSS_KEY_CANDIDATES.join(' / '))
 }
 
 // 开发验证用：YIBEN_SCREENSHOT=<png路径>，可选 YIBEN_ROUTE=<hash路由> / YIBEN_THEME=paper|comic（兼容旧值 light）
@@ -206,6 +268,8 @@ function createWindow(): void {
     if (/^(https?|mailto):/i.test(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
   })
+
+  registerBossKey(mainWindow)
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     void mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])

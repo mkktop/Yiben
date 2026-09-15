@@ -64,3 +64,22 @@ jobs:
             dist/latest.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # R2 更新渠道（应用内检查走 https://yiben.kaikun.top/latest.yml）：
+      # Cloudflare REST 直传对象，无需装 wrangler；latest.yml 的 url 字段由
+      # package.json publish.url（generic）生成，桶内对象名须与其一致（桶根直挂）
+      - name: 上传到 R2 更新渠道（yiben.kaikun.top）
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem dist/Yiben_*_setup.exe | Select-Object -First 1
+          if (-not $exe) { throw '找不到安装包 dist/Yiben_*_setup.exe' }
+          $base = "https://api.cloudflare.com/client/v4/accounts/$env:CF_ACCOUNT_ID/r2/buckets/yiben/objects"
+          $h = @{ Authorization = "Bearer $env:CF_API_TOKEN" }
+          Invoke-RestMethod -Method Put -Uri "$base/$($exe.Name)" -InFile $exe.FullName -Headers $h -ContentType 'application/octet-stream' | Out-Null
+          Invoke-RestMethod -Method Put -Uri "$base/latest.yml" -InFile dist/latest.yml -Headers $h -ContentType 'text/yaml' | Out-Null
+          Write-Host "R2 已上传: $($exe.Name) + latest.yml"

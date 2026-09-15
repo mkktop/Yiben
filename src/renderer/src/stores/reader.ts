@@ -35,7 +35,7 @@ interface ReaderState {
 
 export const useReaderStore = create<ReaderState>((set, get) => ({
   mode: 'single',
-  fit: 'width',
+  fit: 'height',
   rtl: true,
   rotate: 0,
   page: 0,
@@ -50,7 +50,7 @@ export const useReaderStore = create<ReaderState>((set, get) => ({
   init: (prefs, pageCount, startPage) =>
     set({
       mode: (prefs.mode as ReaderMode) ?? 'single',
-      fit: (prefs.fit as ReaderFit) ?? 'width',
+      fit: (prefs.fit as ReaderFit) ?? 'height',
       rtl: prefs.rtl ?? true,
       rotate: prefs.rotate ?? 0,
       pageCount,

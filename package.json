@@ -1,7 +1,7 @@
 {
   "name": "yiben",
   "productName": "一本 Yiben",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "精美的本地 + 天翼云盘漫画阅读器",
   "main": "./out/main/index.js",
   "author": "yiben",
@@ -27,10 +27,10 @@
       "**/node_modules/node-unrar-js/**"
     ],
     "publish": {
-      "provider": "github",
-      "owner": "mkktop",
-      "repo": "Yiben"
+      "provider": "generic",
+      "url": "https://yiben.kaikun.top"
     },
+    "releaseNotesFile": "RELEASE_NOTES.md",
     "files": [
       "out/**",
       "!**/node_modules/*/{CHANGELOG.md,README.md,README_*.md,.md}",

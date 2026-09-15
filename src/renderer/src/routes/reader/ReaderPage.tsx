@@ -232,7 +232,7 @@ export function ReaderPage() {
     s.prev()
   }, [openChapter])
 
-  /** 显式跳话（顶栏按钮/末页卡片）：不管当前读到哪，直接进前后话 */
+  /** 显式跳话（顶栏按钮）：不管当前读到哪，直接进前后话 */
   const goNextChapter = useCallback(() => {
     const n = neighborsRef.current?.next
     if (n) openChapter(n.id)
@@ -619,9 +619,14 @@ export function ReaderPage() {
           onNext={goNext}
         />
       ) : (
-        // 点击区只翻页不跨话（store 的 next/prev 自带章节内钳位）；
-        // 跨话走顶栏按钮、末页卡片或键盘（到末页自动进下一话）
-        <ImageViewer key={`${activeId}-${mode}`} chapterId={activeId} seriesId={seriesId} />
+        // 点击区与键盘同一条越界感知链路：末屏点击直接进下一话（首页回上一话末页）
+        <ImageViewer
+          key={`${activeId}-${mode}`}
+          chapterId={activeId}
+          seriesId={seriesId}
+          onNext={goNext}
+          onPrev={goPrev}
+        />
       )}
 
       <ReaderChrome
@@ -646,12 +651,6 @@ export function ReaderPage() {
         onHintClose={() => setHint(null)}
         panel={panel}
         onPanelChange={setPanel}
-        hideEndCard={
-          mode === 'webtoon' &&
-          neighbors?.next != null &&
-          neighbors.next.kind !== 'pdf' &&
-          neighbors.next.page_count > 0
-        }
       />
     </div>
   )

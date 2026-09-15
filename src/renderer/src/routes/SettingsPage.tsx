@@ -89,7 +89,7 @@ function ReaderDefaultsSection() {
   }
 
   const mode = defaults.mode ?? 'single'
-  const fit = defaults.fit ?? 'width'
+  const fit = defaults.fit ?? 'height'
   const rtl = defaults.rtl ?? true
 
   return (
