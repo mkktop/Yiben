@@ -30,7 +30,9 @@
       "provider": "generic",
       "url": "https://yiben.kaikun.top"
     },
-    "releaseNotesFile": "RELEASE_NOTES.md",
+    "releaseInfo": {
+      "releaseNotesFile": "RELEASE_NOTES.md"
+    },
     "files": [
       "out/**",
       "!**/node_modules/*/{CHANGELOG.md,README.md,README_*.md,.md}",
