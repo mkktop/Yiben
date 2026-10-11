@@ -85,7 +85,8 @@ jobs:
           Invoke-RestMethod -Method Put -Uri "$base/$($exe.Name)" -InFile $exe.FullName -Headers $h -ContentType 'application/octet-stream' | Out-Null
           Invoke-RestMethod -Method Put -Uri "$base/latest.yml" -InFile dist/latest.yml -Headers $h -ContentType 'text/yaml' | Out-Null
           # 上传核验：exe 与 latest.yml 缺一就是半发布状态（客户端会拿到 404 下载），
-          # 必须当场失败而不是等用户反馈
-          Invoke-WebRequest -Method Head -Uri "$base/$($exe.Name)" -Headers $h | Out-Null
-          Invoke-WebRequest -Method Head -Uri "$base/latest.yml" -Headers $h | Out-Null
+          # 必须当场失败而不是等用户反馈。核验走公开域名而不是 REST API——
+          # R2 API 对象接口不支持 HEAD（405），且公开域才是客户端实际访问的路径
+          Invoke-WebRequest -Method Head -Uri "https://yudu-media.yeyushi.com/$($exe.Name)" | Out-Null
+          Invoke-WebRequest -Method Head -Uri "https://yudu-media.yeyushi.com/latest.yml" | Out-Null
           Write-Host "R2 已上传并核验: $($exe.Name) + latest.yml"
