@@ -262,7 +262,10 @@ async function main() {
   const wideSeriesResult = wideSeriesOutput.split(/\r?\n/).find((line) => line.startsWith('[eval] '))
   if (!wideSeriesResult || wideSeriesResult.includes('EVAL_ERROR') || !JSON.parse(wideSeriesResult.slice(7)).success)
     throw new Error(wideSeriesOutput)
-  console.log('SERIES_LAYOUT_OK', wideSeriesResult.slice(7))
+  // 宽窗口检查在屏幕放不下 1280 宽窗口的环境（CI 虚拟屏）里被 eval 显式跳过
+  if (JSON.parse(wideSeriesResult.slice(7)).skipped)
+    console.log('SERIES_LAYOUT_SKIPPED', JSON.stringify({ skipped: JSON.parse(wideSeriesResult.slice(7)).skipped }))
+  else console.log('SERIES_LAYOUT_OK', wideSeriesResult.slice(7))
   for (const theme of ['comic', 'neon']) {
     setTestWindow()
     const previewOutput = await run(electron, ['.', `--user-data-dir=${profile}`], {

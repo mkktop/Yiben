@@ -33,6 +33,12 @@
     await wait(() => !modal(), '关闭查看弹窗')
   }
   try {
+    // CI 虚拟屏（1024×768）放不下 1280 宽的窗口，系统会把窗口钳制到工作区大小；
+    // 此时宽窗口布局无法验证，显式跳过并记录原因（本地大屏照常执行）
+    if (!minimumWindow && screen.availWidth < 1296) {
+      return { success: true, skipped: `宽窗口检查跳过：屏幕工作区 ${screen.availWidth}×${screen.availHeight} 不足以容纳 1280 宽窗口`,
+        checks, width: innerWidth, height: innerHeight, minimumWindow }
+    }
     const list = await window.yudu.series.list({ limit: 5000 })
     const series = list.find((item) => item.title === '海贼王')
     if (!series) throw new Error('未找到隔离自测书库')
