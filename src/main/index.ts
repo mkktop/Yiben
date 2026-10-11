@@ -10,7 +10,10 @@ import { runSelfTest } from './selftest'
 import { getSetting, setSetting } from './settings'
 import { startWatchers } from './watcher'
 import { setupAutoUpdate } from './updater'
+import { registerBossKey } from './bossKey'
 import { handleArgv, handleFilePath, markWindowReady } from './openFile'
+import { applyPendingRestore, autoBackup } from './backup'
+import { restoredContentSize } from './util/windowBounds'
 
 // 必须在 app ready 之前注册自定义协议
 registerProtocol()
@@ -37,12 +40,16 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 function bootstrap(): void {
-  app.whenReady()
-    .then(() => {
-      // YIBEN_A11Y=1 时向系统暴露网页无障碍树（供桌面自动化测试 / 读屏器使用）
-      if (process.env['YIBEN_A11Y']) app.accessibilitySupportEnabled = true
+  app
+    .whenReady()
+    .then(async () => {
+      // YUDU_A11Y=1 时向系统暴露网页无障碍树（供桌面自动化测试 / 读屏器使用）
+      if (process.env['YUDU_A11Y']) app.accessibilitySupportEnabled = true
 
+      await applyPendingRestore()
       openDb()
+      if (!process.env['YUDU_SELFTEST'])
+        void autoBackup().catch((error) => console.warn('[backup]', error))
       attachProtocolHandlers()
       registerIpc()
       // 打包版挂 electron-updater 监听（进度/就绪广播）；dev 下是空操作
@@ -51,9 +58,9 @@ function bootstrap(): void {
       void import('./cloud189/cache').then((m) => m.cleanupPartFiles()).catch(() => {})
 
       // 本地库文件监听（可在设置里关闭）；自测模式不启动
-      if (!process.env['YIBEN_SELFTEST'] && getSetting('autoRescan', true)) startWatchers()
+      if (!process.env['YUDU_SELFTEST'] && getSetting('autoRescan', true)) startWatchers()
 
-      const fixture = process.env['YIBEN_SELFTEST']
+      const fixture = process.env['YUDU_SELFTEST']
       if (fixture) {
         void runSelfTest(fixture)
         return
@@ -71,7 +78,7 @@ function bootstrap(): void {
     .catch((err) => {
       // openDb 抛错（磁盘满/DB 损坏）等启动失败不能静默白屏
       console.error('[boot] 初始化失败:', err)
-      dialog.showErrorBox('一本启动失败', err instanceof Error ? err.message : String(err))
+      dialog.showErrorBox('雨读启动失败', err instanceof Error ? err.message : String(err))
       app.quit()
     })
 
@@ -79,97 +86,51 @@ function bootstrap(): void {
     if (process.platform !== 'darwin') app.quit()
   })
 
-  // 老板键是全局热键：应用退出必须注销，否则热键被残留注册占死
+  // 老板键是全局热键：应用退出必须注销，否则热键被残留注册占死（见 bossKey.ts）
   app.on('will-quit', () => {
     globalShortcut.unregisterAll()
   })
 }
 
 // ---------- 老板键 ----------
-// 全局热键（焦点不在应用上也生效）：按一下立即隐藏窗口，再按恢复。
-// 隐藏比最小化更彻底——任务栏不缩略、Alt+Tab 不露出（恢复走热键或重启应用）
+// 实现在 bossKey.ts（ipc.ts 也要查询实际生效键，独立模块避免循环依赖）
 
-// 主候选按序取第一个空闲的；Ctrl+Alt+X 一并注册为别名——右 Alt（AltGr）会被
-// Windows 翻译成 Ctrl+Alt，左/右 Alt 按下都能触发同一回调
-const BOSS_KEY_CANDIDATES = ['Alt+X', 'Alt+B', 'Control+Alt+B']
-const BOSS_KEY_ALIAS = 'Control+Alt+X'
-let bossWindow: BrowserWindow | null = null
-let lastBossToggleAt = 0
-
-function toggleBossHide(): void {
-  // 长按时系统键盘自动重复会连发 WM_HOTKEY，窗口在隐藏/恢复间抖动、
-  // 终态随奇偶随机（表现为「按了没隐藏」）——leading 防抖折叠成一次切换
-  const now = Date.now()
-  if (now - lastBossToggleAt < 400) return
-  lastBossToggleAt = now
-  const win = bossWindow
-  if (!win || win.isDestroyed()) return
-  if (win.isVisible() && !win.isMinimized()) {
-    console.log('[bosskey] 触发: 隐藏窗口')
-    win.hide()
-  } else {
-    console.log('[bosskey] 触发: 恢复窗口')
-    if (win.isMinimized()) win.restore()
-    win.show()
-    win.focus()
-  }
-}
-
-function registerBossKey(win: BrowserWindow): void {
-  bossWindow = win
-  for (const acc of BOSS_KEY_CANDIDATES) {
-    try {
-      if (globalShortcut.register(acc, toggleBossHide)) {
-        console.log('[bosskey] 已注册主热键:', acc)
-        if (acc !== BOSS_KEY_ALIAS) {
-          try {
-            if (globalShortcut.register(BOSS_KEY_ALIAS, toggleBossHide)) {
-              console.log('[bosskey] 已注册别名热键:', BOSS_KEY_ALIAS, '（右 Alt/AltGr 兼容）')
-            } else {
-              console.warn('[bosskey] 别名热键被占用:', BOSS_KEY_ALIAS)
-            }
-          } catch {
-            /* 别名注册失败不影响主热键 */
-          }
-        }
-        return
-      }
-    } catch {
-      /* 加速键非法或系统拒绝，试下一个候选 */
-    }
-  }
-  console.warn('[bosskey] 候选热键全部注册失败:', BOSS_KEY_CANDIDATES.join(' / '))
-}
-
-// 开发验证用：YIBEN_SCREENSHOT=<png路径>，可选 YIBEN_ROUTE=<hash路由> / YIBEN_THEME=paper|comic（兼容旧值 light）
+// 开发验证用：YUDU_SCREENSHOT=<png路径>，可选 YUDU_ROUTE=<hash路由> / YUDU_THEME=paper|comic|neon（兼容旧值 light）
 // is.dev 门控：这些钩子允许向渲染进程注入任意 JS，不能跟着编译进生产包
 async function debugScreenshot(win: BrowserWindow): Promise<void> {
   if (!is.dev) return
-  const target = process.env['YIBEN_SCREENSHOT']
+  const target = process.env['YUDU_SCREENSHOT']
   if (!target) return
   win.webContents.on('console-message', (_e, level, message) => {
     if (level >= 2) console.log('[renderer]', level, message)
   })
-  const theme = process.env['YIBEN_THEME']
-  const themeName = theme === 'comic' || theme === 'dark' ? 'comic' : theme ? 'paper' : undefined
+  const theme = process.env['YUDU_THEME']
+  const themeName =
+    theme === 'comic' || theme === 'dark'
+      ? 'comic'
+      : theme === 'neon'
+        ? 'neon'
+        : theme
+          ? 'paper'
+          : undefined
   if (themeName) {
     await win.webContents.executeJavaScript(
       `document.documentElement.dataset.theme = '${themeName}';
-       document.documentElement.classList.toggle('dark', ${themeName === 'comic'})`
+       document.documentElement.classList.toggle('dark', ${themeName !== 'paper'})`
     )
     await new Promise((r) => setTimeout(r, 400))
   }
-  const route = process.env['YIBEN_ROUTE']
+  const route = process.env['YUDU_ROUTE']
   if (route) {
     // Git Bash 会把 "/xxx" 形态的环境变量按路径转换，这里兼容不带 #/ 的写法
     const hash = route.startsWith('#') ? route : `#/${route.replace(/^\/+/, '')}`
     await win.webContents.executeJavaScript(`location.hash = '${hash}'`)
     await new Promise((r) => setTimeout(r, 800))
   }
-  const key = process.env['YIBEN_KEY']
+  const key = process.env['YUDU_KEY']
   if (key) {
     // 模拟按键（验证翻页/进度等交互）
-    for (let i = 0; i < Number(process.env['YIBEN_KEY_TIMES'] ?? 1); i++) {
+    for (let i = 0; i < Number(process.env['YUDU_KEY_TIMES'] ?? 1); i++) {
       await win.webContents.executeJavaScript(
         `window.dispatchEvent(new KeyboardEvent('keydown', { key: '${key}' }))`
       )
@@ -177,7 +138,7 @@ async function debugScreenshot(win: BrowserWindow): Promise<void> {
     }
     await new Promise((r) => setTimeout(r, 600))
   }
-  const evalExpr = process.env['YIBEN_EVAL']
+  const evalExpr = process.env['YUDU_EVAL']
   if (evalExpr) {
     const result = await win.webContents
       .executeJavaScript(evalExpr)
@@ -225,6 +186,8 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 640,
     show: false,
+    // dev 下窗口/任务栏用品牌图标；打包版的 exe 已内嵌 build/icon.ico，交给系统取 exe 图标
+    icon: is.dev ? join(app.getAppPath(), 'resources/icon.png') : undefined,
     // 无边框：标题栏由渲染层顶栏承担（app-region 拖拽 + 自绘控制按钮）
     frame: false,
     backgroundColor: '#171412',
@@ -237,6 +200,11 @@ function createWindow(): void {
       nodeIntegration: false
     }
   })
+  if (saved && process.platform === 'win32') {
+    // Windows 缩放下 constructor 会额外计入外框；按当前差值恢复，避免每次重开变大。
+    const size = restoredContentSize(saved, mainWindow.getNormalBounds(), mainWindow.getContentBounds())
+    mainWindow.setContentSize(size.width, size.height)
+  }
   if (saved?.maximized) mainWindow.maximize()
 
   // 最大化状态推给渲染层，WindowControls 切换 最大化/还原 图标
@@ -264,7 +232,7 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    // 只放行常见网页协议交给系统打开；file:/yiben:/其他自定义协议一律不外开
+    // 只放行常见网页协议交给系统打开；file:/yudu:/其他自定义协议一律不外开
     if (/^(https?|mailto):/i.test(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
   })
@@ -278,13 +246,26 @@ function createWindow(): void {
   }
 
   // 只允许应用自身页面导航（hash 路由切换、dev 热重载）：
-  // 一旦放行外部地址，远程页面将继承 preload 注入的 IPC 能力
-  const appOrigin =
+  // 一旦放行外部地址，远程页面将继承 preload 注入的 IPC 能力。
+  // dev 用 origin 全等比对（startsWith 会放过 localhost:5173.evil.com 这类前缀伪装）；
+  // 生产是 file:// 精确页面路径前缀，锚定 index.html 本身
+  const devOrigin =
     is.dev && process.env['ELECTRON_RENDERER_URL']
       ? new URL(process.env['ELECTRON_RENDERER_URL']).origin
-      : `file:///${join(__dirname, '../renderer/index.html').replace(/\\/g, '/')}`
+      : null
+  const appPagePrefix = `file:///${join(__dirname, '../renderer/index.html').replace(/\\/g, '/')}`
   mainWindow.webContents.on('will-navigate', (e, url) => {
-    if (!url.startsWith(appOrigin)) {
+    let allowed = false
+    if (devOrigin) {
+      try {
+        allowed = new URL(url).origin === devOrigin
+      } catch {
+        allowed = false
+      }
+    } else {
+      allowed = url.startsWith(appPagePrefix)
+    }
+    if (!allowed) {
       console.warn('[nav] 已拦截非应用导航:', url)
       e.preventDefault()
     }

@@ -1,10 +1,18 @@
 import { create } from 'zustand'
 import type { ReaderPrefs } from '@shared/types'
+import { normalizeReaderPrefs } from '@shared/readerPrefs'
 
 export type ReaderMode = 'single' | 'double' | 'webtoon'
 export type ReaderFit = 'width' | 'height' | 'original'
 
 interface ReaderState {
+  enhance: boolean
+  sharpness: number
+  autoTrim: boolean
+  contrast: number
+  brightness: number
+  warmth: number
+  eyeSchedule: boolean
   mode: ReaderMode
   fit: ReaderFit
   rtl: boolean
@@ -15,7 +23,7 @@ interface ReaderState {
   /** 横宽比 >1 的跨页大图（扉页/彩页），双页模式下单独占满一屏 */
   widePages: number[]
   /** 双页配对偏移：0 = (1,2)(3,4)…；1 = 第 1 页单独、(2,3)(4,5)…（C 键切换） */
-  spreadOffset: number
+  spreadOffset: 0 | 1
   /** 阅读器缩放（0.5–4，1 = 100%）；放在 store 而非组件局部：翻页/切话/跨话拼接都保持 */
   zoom: number
 
@@ -34,6 +42,13 @@ interface ReaderState {
 }
 
 export const useReaderStore = create<ReaderState>((set, get) => ({
+  enhance: false,
+  sharpness: 1,
+  autoTrim: false,
+  contrast: 1,
+  brightness: 1,
+  warmth: 0,
+  eyeSchedule: false,
   mode: 'single',
   fit: 'height',
   rtl: true,
@@ -47,8 +62,16 @@ export const useReaderStore = create<ReaderState>((set, get) => ({
   immersive: false,
   showThumbs: false,
 
-  init: (prefs, pageCount, startPage) =>
+  init: (prefs, pageCount, startPage) => {
+    prefs = normalizeReaderPrefs(prefs)
     set({
+      enhance: prefs.enhance ?? false,
+      sharpness: prefs.sharpness ?? 1,
+      autoTrim: prefs.autoTrim ?? false,
+      contrast: prefs.contrast ?? 1,
+      brightness: prefs.brightness ?? 1,
+      warmth: prefs.warmth ?? 0,
+      eyeSchedule: prefs.eyeSchedule ?? false,
       mode: (prefs.mode as ReaderMode) ?? 'single',
       fit: (prefs.fit as ReaderFit) ?? 'height',
       rtl: prefs.rtl ?? true,
@@ -59,7 +82,8 @@ export const useReaderStore = create<ReaderState>((set, get) => ({
       spreadOffset: prefs.spreadOffset ?? 0,
       zoom: prefs.zoom ?? 1,
       immersive: false
-    }),
+    })
+  },
 
   setPage: (page) => {
     const { pageCount } = get()
@@ -105,7 +129,7 @@ export const useReaderStore = create<ReaderState>((set, get) => ({
 export function patchReaderPrefs(seriesId: number, prefs: ReaderPrefs): void {
   useReaderStore.getState().patch(prefs)
   if (seriesId > 0 && typeof window !== 'undefined') {
-    void window.yiben.reader.setPrefs(seriesId, prefs).catch(() => {})
+    void window.yudu.reader.setPrefs(seriesId, prefs).catch(() => {})
   }
 }
 
@@ -132,9 +156,7 @@ export function atLastScreen(
 ): boolean {
   if (pageCount <= 0) return false
   if (mode !== 'double') return page >= pageCount - 1
-  return (
-    Math.max(...spreadPages(page, pageCount, false, widePages, spreadOffset)) >= pageCount - 1
-  )
+  return Math.max(...spreadPages(page, pageCount, false, widePages, spreadOffset)) >= pageCount - 1
 }
 
 /**

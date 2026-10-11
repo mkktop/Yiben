@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+      - name: 类型检查
+        run: pnpm typecheck
+      - name: 单元测试
+        run: pnpm test
+      - name: 构建验证
+        run: pnpm build
+      - name: 隔离书库全链路自检
+        shell: pwsh
+        run: |
+          $env:FIX_ROOT = Join-Path $env:RUNNER_TEMP 'yudu-ci-fixture'
+          node scripts/make-fixture.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:YUDU_SELFTEST = $env:FIX_ROOT
+          $dataDir = Join-Path $env:RUNNER_TEMP 'yudu-ci-user-data'
+          $output = & pnpm exec electron . "--user-data-dir=$dataDir" 2>&1
+          $code = $LASTEXITCODE
+          $output | ForEach-Object { Write-Host $_ }
+          # 自检当前只打印失败标记，不能仅凭 Electron 的退出码判成功。
+          if ($code -ne 0 -or -not ($output -match '^SELFTEST_OK$') -or ($output -match 'SELFTEST_FAIL|SELFTEST_ERROR')) {
+            throw '书库全链路自检失败'
+          }
+      - name: 阅读器与文件关联 DOM 回归
+        run: node scripts/reader-regression.js

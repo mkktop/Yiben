@@ -81,16 +81,74 @@ import { getSetting, setSetting } from './settings'
 import { broadcast } from './events'
 import { removeSeriesArtifacts } from './thumbnail'
 import { takePendingOpenFile } from './openFile'
+import { getBossKey, reapplyBossKey } from './bossKey'
+import { isValidAccelerator } from './util/accelerator'
 import { longPath } from './util/paths'
+import { createBackup, listBackups, scheduleRestore } from './backup'
+import { offlineStatus, setOfflinePinned } from './cloud189/offline'
+import { addWebDav, webdavList } from './webdav/client'
+import type { WebDavConfig } from '../shared/types'
+import { logReadingTime } from './db'
+import { searchMetadata, applyMetadata, writeComicInfo } from './metadata'
+import { mergeSeries, mergeSources, unmergeSeries } from './seriesMerge'
+import { normalizeReaderPrefs } from '../shared/readerPrefs'
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
 /** 渲染层可读写的应用配置键（白名单：settings 表里还有加密凭据等敏感键，不能开放） */
-const CONFIG_KEYS = new Set(['readerDefaults', 'resumeOnLaunch', 'autoRescan', 'autoCheckUpdate'])
+const CONFIG_KEYS = new Set([
+  'readerDefaults',
+  'resumeOnLaunch',
+  'autoRescan',
+  'autoCheckUpdate',
+  'updateChannel',
+  'bossKey',
+  'backupEnabled',
+  'backupRetention'
+])
 
 export function registerIpc(): void {
+  ipcMain.handle('series:merge', async (_event, payload: { source: number; target: number }) => {
+    const result = await mergeSeries(payload.source, payload.target)
+    broadcast('library:changed', {})
+    return result
+  })
+  ipcMain.handle('series:mergeSources', (_event, id: number) => mergeSources(id))
+  ipcMain.handle('series:unmerge', async (_event, id: number) => {
+    await unmergeSeries(id)
+    broadcast('library:changed', {})
+  })
+  ipcMain.handle('metadata:search', (_event, title: string) => searchMetadata(title))
+  ipcMain.handle('metadata:apply', (_event, payload: { id: number; candidate: string }) => {
+    applyMetadata(payload.id, payload.candidate)
+    broadcast('library:changed', {})
+  })
+  ipcMain.handle('metadata:write', (_event, id: number) => writeComicInfo(id))
+  ipcMain.handle('stats:time', (_event, payload: { chapterId: number; ms: number }) =>
+    logReadingTime(payload.chapterId, payload.ms)
+  )
+  ipcMain.handle('webdav:add', async (_event, config: WebDavConfig) => {
+    const lib = await addWebDav(config)
+    queueRescan(lib.id)
+    return lib
+  })
+  ipcMain.handle('webdav:list', (_event, payload: { id: number; folder: string }) =>
+    webdavList(payload.id, payload.folder)
+  )
+  ipcMain.handle('cloud:offlineStatus', (_event, id: number) => offlineStatus(id))
+  ipcMain.handle('cloud:offlinePin', (_event, payload: { id: number; pinned: boolean }) => {
+    setOfflinePinned(payload.id, payload.pinned)
+    return offlineStatus(payload.id)
+  })
+  ipcMain.handle('backup:list', () => listBackups())
+  ipcMain.handle('backup:create', () => createBackup())
+  ipcMain.handle('backup:restore', async (_event, id: string) => {
+    await scheduleRestore(id)
+    app.relaunch()
+    app.quit()
+  })
   // 无边框窗口的控制按钮（渲染层自绘，见 WindowControls）
   ipcMain.handle('appWindow:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize())
   ipcMain.handle('appWindow:toggleMaximize', (e) => {
@@ -101,8 +159,9 @@ export function registerIpc(): void {
     return win.isMaximized()
   })
   ipcMain.handle('appWindow:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close())
-  ipcMain.handle('appWindow:isMaximized', (e) =>
-    BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
+  ipcMain.handle(
+    'appWindow:isMaximized',
+    (e) => BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false
   )
 
   // 应用内更新（electron-updater，仅打包版生效，见 updater.ts）
@@ -114,6 +173,15 @@ export function registerIpc(): void {
 
   // 双击文件打开：渲染层挂载后主动领取冷启动暂存的章节（推送可能早于监听注册）
   ipcMain.handle('app:takeOpenFile', () => takePendingOpenFile())
+
+  // 老板键：查询实际生效的热键（'' = 注册失败）；设置改动后重注册并返回新生效键。
+  // 录制的组合键经结构校验（必须含 Ctrl/Alt 或 F 键），非法值直接拒绝
+  ipcMain.handle('app:bossKey', () => getBossKey())
+  ipcMain.handle('app:bossKey:set', (_e, value: string) => {
+    if (!isValidAccelerator(value)) throw new Error(`非法的老板键：${String(value)}`)
+    setSetting('bossKey', value)
+    return reapplyBossKey()
+  })
 
   ipcMain.handle('libraries:list', () => listLibraries())
 
@@ -217,10 +285,12 @@ export function registerIpc(): void {
     return runExclusiveScan(async () => {
       broadcast('scan:progress', { libraryId: lib.id, phase: 'reading', title: series.title })
       try {
-        await scanOneLocalSeries(lib.id, {
-          folder: series.folder_path,
-          isSingleFile: series.is_single_file === 1
-        })
+        for (const entry of [series, ...mergeSources(id)]) {
+          await scanOneLocalSeries(lib.id, {
+            folder: entry.folder_path,
+            isSingleFile: entry.is_single_file === 1
+          })
+        }
         rebuildFts()
         return { ok: true }
       } catch (err) {
@@ -241,10 +311,13 @@ export function registerIpc(): void {
     resetSeriesProgress(id)
     return true
   })
-  ipcMain.handle('progress:setCompleted', (_e, payload: { chapterId: number; completed: boolean }) => {
-    setChapterCompleted(payload.chapterId, payload.completed)
-    return true
-  })
+  ipcMain.handle(
+    'progress:setCompleted',
+    (_e, payload: { chapterId: number; completed: boolean }) => {
+      setChapterCompleted(payload.chapterId, payload.completed)
+      return true
+    }
+  )
 
   ipcMain.handle('home:continue', () => continueReading(12))
   ipcMain.handle('home:recent', () => recentlyAdded(12))
@@ -281,9 +354,15 @@ export function registerIpc(): void {
     return true
   })
 
-  ipcMain.handle('reader:defaults:get', (): ReaderPrefs => getSetting('readerDefaults', {}))
+  ipcMain.handle(
+    'reader:defaults:get',
+    (): ReaderPrefs => normalizeReaderPrefs(getSetting('readerDefaults', {}))
+  )
   ipcMain.handle('reader:defaults:set', (_e, prefs: ReaderPrefs): ReaderPrefs => {
-    const merged = { ...getSetting<ReaderPrefs>('readerDefaults', {}), ...prefs }
+    const merged = normalizeReaderPrefs({
+      ...getSetting<ReaderPrefs>('readerDefaults', {}),
+      ...prefs
+    })
     setSetting('readerDefaults', merged)
     return merged
   })
@@ -295,7 +374,7 @@ export function registerIpc(): void {
   })
   ipcMain.handle('bookmarks:list', (_e, seriesId: number) => bookmarksForSeries(seriesId))
 
-  // PDF 渲染用：经 IPC 返回原始字节（自定义协议的 fetch 在 Electron 下不可靠）
+  // 保留整包字节 IPC 供兼容调用；PDF 阅读器使用支持取消与 Range 的文件协议。
   ipcMain.handle('reader:file', async (_e, chapterId: number) => {
     const chapter = getChapter(chapterId)
     if (!chapter) return null
@@ -330,14 +409,16 @@ export function registerIpc(): void {
   )
 
   ipcMain.handle('reader:prefs:get', (_e, seriesId: number): ReaderPrefs => {
-    return getSetting<Record<string, ReaderPrefs>>('readerPrefs', {})[String(seriesId)] ?? {}
+    return normalizeReaderPrefs(
+      getSetting<Record<string, ReaderPrefs>>('readerPrefs', {})[String(seriesId)] ?? {}
+    )
   })
 
   ipcMain.handle(
     'reader:prefs:set',
     (_e, payload: { seriesId: number; prefs: ReaderPrefs }): ReaderPrefs => {
       const all = getSetting<Record<string, ReaderPrefs>>('readerPrefs', {})
-      const merged = { ...all[String(payload.seriesId)], ...payload.prefs }
+      const merged = normalizeReaderPrefs({ ...all[String(payload.seriesId)], ...payload.prefs })
       all[String(payload.seriesId)] = merged
       setSetting('readerPrefs', all)
       return merged
@@ -389,18 +470,13 @@ export function registerIpc(): void {
   ipcMain.handle('cloud:prefetchCancel', (_e, seriesId: number) => cancelPrefetch(seriesId))
   ipcMain.handle('cloud:prefetchRunning', () => prefetchRunning())
 
-  ipcMain.handle(
-    'cloud:browse',
-    async (_e, payload: { folderId?: string; familyId?: string }) => {
-      const entries = await cloudListAll(payload.folderId ?? '-11', payload.familyId || undefined)
-      return {
-        folders: entries.filter((e) => e.isDir).map((e) => ({ id: e.id, name: e.name })),
-        files: entries
-          .filter((e) => !e.isDir)
-          .map((e) => ({ id: e.id, name: e.name, size: e.size }))
-      }
+  ipcMain.handle('cloud:browse', async (_e, payload: { folderId?: string; familyId?: string }) => {
+    const entries = await cloudListAll(payload.folderId ?? '-11', payload.familyId || undefined)
+    return {
+      folders: entries.filter((e) => e.isDir).map((e) => ({ id: e.id, name: e.name })),
+      files: entries.filter((e) => !e.isDir).map((e) => ({ id: e.id, name: e.name, size: e.size }))
     }
-  )
+  })
 
   ipcMain.handle(
     'cloud:addLibrary',
@@ -432,19 +508,14 @@ export function registerIpc(): void {
     const entries = await cloud115ListAll(payload.folderId ?? '0')
     return {
       folders: entries.filter((e) => e.isDir).map((e) => ({ id: e.id, name: e.name })),
-      files: entries
-        .filter((e) => !e.isDir)
-        .map((e) => ({ id: e.id, name: e.name, size: e.size }))
+      files: entries.filter((e) => !e.isDir).map((e) => ({ id: e.id, name: e.name, size: e.size }))
     }
   })
 
-  ipcMain.handle(
-    'cloud115:addLibrary',
-    async (_e, payload: { folderId: string; name: string }) => {
-      const lib = addLibrary(payload.name, `cloud115://${payload.folderId}`, '115')
-      setLibraryCloudMeta(lib.id, payload.folderId, null)
-      queueRescan(lib.id)
-      return lib
-    }
-  )
+  ipcMain.handle('cloud115:addLibrary', async (_e, payload: { folderId: string; name: string }) => {
+    const lib = addLibrary(payload.name, `cloud115://${payload.folderId}`, '115')
+    setLibraryCloudMeta(lib.id, payload.folderId, null)
+    queueRescan(lib.id)
+    return lib
+  })
 }

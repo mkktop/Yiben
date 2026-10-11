@@ -1,5 +1,4 @@
 import { readFile } from 'fs/promises'
-import { existsSync } from 'fs'
 import { join } from 'path'
 import { getChapter, getChapterPageFile, getChapterSource, updateChapterPageCount } from '../db'
 import { getDriver } from '../archives'
@@ -10,7 +9,9 @@ import { ensureCached } from './cache'
 import { dropRemoteZip, getRemoteZip } from './remoteZipManager'
 import { ensure115ChapterPage, ensure115LocalPath, read115EnsuredPage } from '../cloud115/reader'
 import { broadcast } from '../events'
-import { archiveKindOf, longPath, sanitizeFileName } from '../util/paths'
+import { archiveKindOf, sanitizeFileName } from '../util/paths'
+import { ensureWebDavPage, ensureWebDavLocalPath, readWebDavPage } from '../webdav/reader'
+import { isCompleteFile } from '../util/cachedFile'
 
 export interface EnsureResult {
   chapterId: number
@@ -36,13 +37,12 @@ export async function ensureChapterPage(
   signal?: AbortSignal
 ): Promise<EnsureResult> {
   const src = getChapterSource(chapterId)
+  if (src?.libraryKind === 'webdav') return ensureWebDavPage(chapterId, pageIndex, signal)
   if (src?.libraryKind === '115') return ensure115ChapterPage(chapterId, pageIndex, signal)
 
   const ch = getChapter(chapterId)
   if (!ch) throw new Error(`章节不存在：${chapterId}`)
   const familyId = src?.familyId ?? undefined
-
-  if (ch.kind === 'cfolder' || ch.cloud_file_id) await waitCloudReady()
 
   if (ch.kind === 'cfolder') {
     const page = getChapterPageFile(chapterId, pageIndex)
@@ -53,13 +53,16 @@ export async function ensureChapterPage(
       `f-${chapterId}`,
       `${String(pageIndex).padStart(5, '0')}-${sanitizeFileName(page.name)}`
     )
+    // 本地完整缓存无需恢复云端会话，断网启动也可以读。
+    if (!(await isCompleteFile(dest, page.size))) await waitCloudReady()
     await ensureCached(page.file_id, familyId, dest, page.size, undefined, signal)
     return { chapterId, path: dest, kind: 'file', pageCount: ch.page_count }
   }
 
   if (ch.cloud_file_id) {
     const fileId = ch.cloud_file_id
-    if (!existsSync(longPath(ch.path))) {
+    if (!(await isCompleteFile(ch.path, ch.size))) {
+      await waitCloudReady()
       // 云端 zip：探测 Range 直读，失败（不支持/目录解析不出）回退整包下载
       if (archiveKindOf(ch.path) === 'zip') {
         try {
@@ -112,11 +115,12 @@ export async function ensureLocalChapterPath(
   signal?: AbortSignal
 ): Promise<string> {
   const src = getChapterSource(chapterId)
+  if (src?.libraryKind === 'webdav') return ensureWebDavLocalPath(chapterId, signal)
   if (src?.libraryKind === '115') return ensure115LocalPath(chapterId, signal)
 
   const ch = getChapter(chapterId)
   if (!ch) throw new Error(`章节不存在：${chapterId}`)
-  if (existsSync(longPath(ch.path))) return ch.path
+  if (await isCompleteFile(ch.path, ch.size)) return ch.path
   if (src?.libraryKind !== 'cloud189') return ch.path
   const familyId = src.familyId ?? undefined
   if (ch.cloud_file_id) {
@@ -132,6 +136,7 @@ export async function ensureLocalChapterPath(
 export async function readEnsuredPage(result: EnsureResult, pageIndex: number): Promise<Buffer> {
   if (result.kind === 'file') return readFile(result.path)
   const src = getChapterSource(result.chapterId)
+  if (src?.libraryKind === 'webdav') return readWebDavPage(result, pageIndex)
   if (src?.libraryKind === '115') return read115EnsuredPage(result, pageIndex)
   if (result.kind === 'remotezip') {
     const ch = getChapter(result.chapterId)

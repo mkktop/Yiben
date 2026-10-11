@@ -1,4 +1,4 @@
-import { stat } from 'fs/promises'
+import { readFile, stat } from 'fs/promises'
 import { join } from 'path'
 import {
   countByLibrary,
@@ -101,9 +101,14 @@ export async function scanLibrary(
       done++
     }
   }
-  await Promise.all(
+  // 一路失败时其余 worker 仍可能写库，必须全部收尾后才能让外层释放扫描锁。
+  const results = await Promise.allSettled(
     Array.from({ length: Math.min(SCAN_CONCURRENCY, seriesInputs.length) }, () => worker())
   )
+  for (const result of results) {
+    // 任何一路失败都不进行 retire 对账，避免用不完整的清单标记/删除系列。
+    if (result.status === 'rejected') throw result.reason
+  }
 
   const retired = retireSeriesNotIn(libraryId, seenSeriesPaths)
   if (retired.deletedSeries.length > 0) {
@@ -138,15 +143,14 @@ export interface SeriesInput {
  * 扫描单个本地系列（目录或单文件）：建系列行、章节行、封面。
  * 整库扫描与「单系列重扫」共用；返回系列目录路径（供整库扫描的 retire 对账）。
  */
-export async function scanOneLocalSeries(
-  libraryId: number,
-  input: SeriesInput
-): Promise<string> {
+export async function scanOneLocalSeries(libraryId: number, input: SeriesInput): Promise<string> {
   const title0 = baseTitle(input.folder)
 
   let chapters: Array<{ path: string; isDir: boolean; name: string }>
   if (input.isSingleFile) {
-    chapters = [{ path: input.folder, isDir: false, name: input.folder.split(/[\\/]/).pop() ?? input.folder }]
+    chapters = [
+      { path: input.folder, isDir: false, name: input.folder.split(/[\\/]/).pop() ?? input.folder }
+    ]
   } else {
     const children = await readDirEntries(input.folder)
     const dirs = children.filter((e) => e.isDir).map((e) => e.name)
@@ -172,7 +176,11 @@ export async function scanOneLocalSeries(
 
   // 系列元数据兜底链：目录 ComicInfo.xml > 压缩包内 ComicInfo.xml > EPUB 的 OPF 书名/作者。
   // 包内探测是填空性质（meta_probed 一次即止），避免每轮扫描重复开包
-  const dirInfo = input.isSingleFile ? null : await readComicInfo(input.folder)
+  const dirInfo = input.isSingleFile
+    ? await readFile(`${input.folder}.ComicInfo.xml`, 'utf8')
+        .then(parseComicInfoXml)
+        .catch(() => null)
+    : await readComicInfo(input.folder)
   const probed = dirInfo !== null || seriesMetaProbed(input.folder)
   let info = dirInfo
   if (!info && !probed) info = await readComicInfoFromArchives(chapters)
@@ -314,10 +322,17 @@ async function readComicInfoFromArchives(
   for (const ch of archives.slice(0, 3)) {
     let xml: Buffer | null = null
     try {
-      xml = await withDriver(ch.path, false, async (d) => (await d.readEntry?.('ComicInfo.xml')) ?? null)
+      xml = await withDriver(
+        ch.path,
+        false,
+        async (d) => (await d.readEntry?.('ComicInfo.xml')) ?? null
+      )
     } catch (err) {
       // 单个包损坏不该让整个系列的扫描失败
-      console.warn(`[scan] ComicInfo 探测失败 ${ch.path}:`, err instanceof Error ? err.message : err)
+      console.warn(
+        `[scan] ComicInfo 探测失败 ${ch.path}:`,
+        err instanceof Error ? err.message : err
+      )
       continue
     }
     if (!xml) continue

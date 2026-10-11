@@ -20,6 +20,8 @@ export function usePagePreload(
   useEffect(() => {
     // 章节尚未加载（chapterId=0）时跳过，否则协议层会刷一堆 chapter not found
     if (!enabled || chapterId <= 0) return
+    // 上限兜底：极长会话里避免集合无界增长（清掉只是退回「按需分配 Image 对象」）
+    if (queued.size > 4000) queued.clear()
     for (let d = 1; d <= ahead || d <= behind; d++) {
       // 由近及远：先 +d 再 -d，快速连翻时最近的页最先发起请求
       for (const p of [d <= ahead ? page + d : -1, d <= behind ? page - d : -1]) {

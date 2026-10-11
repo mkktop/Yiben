@@ -39,6 +39,8 @@ export interface SeriesRow {
 }
 
 export interface ChapterRow {
+  /** 合并展示前的扫描归属，用于本地元数据回写与稳定排序。 */
+  origin_series_id?: number
   id: number
   series_id: number
   title: string
@@ -59,13 +61,14 @@ export interface ChapterRow {
 export interface ChapterWithProgress extends ChapterRow {
   read_page: number | null
   completed: number | null
+  read_updated_at: number | null
 }
 
 let db: Database.Database
 
 export function openDb(): Database.Database {
   if (db) return db
-  const file = join(app.getPath('userData'), 'yiben.db')
+  const file = join(app.getPath('userData'), 'yudu.db')
   db = new Database(file)
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
@@ -77,6 +80,11 @@ export function openDb(): Database.Database {
 export function closeDb(): void {
   db?.close()
   db = undefined as unknown as Database.Database
+  upsertChapterStmt = null
+  saveProgressStmt = null
+  oldPageStmt = null
+  chapterSeriesStmt = null
+  logInsertStmt = null
 }
 
 function migrate(db: Database.Database): void {
@@ -192,6 +200,11 @@ function migrate(db: Database.Database): void {
       tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
       PRIMARY KEY (series_id, tag_id)
     );
+    CREATE TABLE IF NOT EXISTS series_merges (
+      source_id INTEGER PRIMARY KEY REFERENCES series(id) ON DELETE CASCADE,
+      target_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_series_merges_target ON series_merges(target_id);
   `)
 
   // 云盘字段（渐进迁移）
@@ -223,6 +236,18 @@ function migrate(db: Database.Database): void {
   tryAlter('ALTER TABLE series ADD COLUMN meta_probed INTEGER NOT NULL DEFAULT 0')
   // 扫描列页失败的原因（损坏的压缩包等），成功时清空
   tryAlter('ALTER TABLE chapters ADD COLUMN scan_error TEXT')
+  // 保留扫描归属与文件路径，仅在阅读查询中合并，重扫不会拆散系列。
+  db.exec(`DROP VIEW IF EXISTS effective_chapters;
+    CREATE VIEW effective_chapters AS
+    SELECT c.id, c.series_id, c.title, c.volume,
+      c.number, c.sort_index, c.path, c.kind, c.page_count, c.size, c.mtime,
+      c.cloud_file_id, c.scan_error, c.series_id AS origin_series_id
+    FROM chapters c WHERE c.series_id NOT IN (SELECT source_id FROM series_merges)
+    UNION ALL
+    SELECT c.id, m.target_id AS series_id, c.title, c.volume,
+      c.number, c.sort_index, c.path, c.kind, c.page_count, c.size, c.mtime,
+      c.cloud_file_id, c.scan_error, c.series_id AS origin_series_id
+    FROM series_merges m JOIN chapters c ON c.series_id = m.source_id`)
 }
 
 /** 每次扫描后重建全文索引（藏书量级下重建成本可忽略） */
@@ -257,6 +282,7 @@ export function addLibrary(name: string, path: string, kind = 'local'): LibraryR
 
 export function removeLibrary(id: number): void {
   db.prepare('DELETE FROM libraries WHERE id = ?').run(id)
+  db.prepare('DELETE FROM settings WHERE key = ?').run(`webdav:${id}`)
   // series/章节级联删除后，可能留下没人引用的标签行
   pruneOrphanTags()
 }
@@ -362,12 +388,20 @@ export function retireSeriesNotIn(libraryId: number, keepPaths: string[]): Retir
     `SELECT 1 FROM progress p JOIN chapters c ON c.id = p.chapter_id WHERE c.series_id = ? LIMIT 1`
   )
   const chapterIds = db.prepare('SELECT id FROM chapters WHERE series_id = ?')
+  const hasMerge = db.prepare(
+    'SELECT 1 FROM series_merges WHERE source_id = ? OR target_id = ? LIMIT 1'
+  )
   const markMissing = db.prepare('UPDATE series SET missing = 1 WHERE id = ?')
   const del = db.prepare('DELETE FROM series WHERE id = ?')
 
-  const result: RetireResult = { missing: 0, missingSeries: [], deletedSeries: [], deletedChapters: [] }
+  const result: RetireResult = {
+    missing: 0,
+    missingSeries: [],
+    deletedSeries: [],
+    deletedChapters: []
+  }
   for (const row of gone) {
-    if (hasProgress.get(row.id)) {
+    if (hasProgress.get(row.id) || hasMerge.get(row.id, row.id)) {
       markMissing.run(row.id)
       result.missing++
       result.missingSeries.push(row.id)
@@ -449,6 +483,73 @@ export function adoptSeriesData(oldSeriesId: number, chapterMap: Map<number, num
         db.prepare(`DELETE FROM ${table} WHERE chapter_id = ?`).run(newId)
         db.prepare(`UPDATE ${table} SET chapter_id = ? WHERE chapter_id = ?`).run(newId, oldId)
       }
+      db.prepare('UPDATE reading_log SET chapter_id = ? WHERE chapter_id = ?').run(newId, oldId)
+    }
+    const firstNewId = chapterMap.values().next().value as number | undefined
+    const newSeriesId = firstNewId
+      ? (
+          db.prepare('SELECT series_id FROM chapters WHERE id = ?').get(firstNewId) as
+            | { series_id: number }
+            | undefined
+        )?.series_id
+      : undefined
+    if (newSeriesId) {
+      const old = getSeries(oldSeriesId)
+      if (old)
+        db.prepare('UPDATE series SET added_at = ?, hidden = ? WHERE id = ?').run(
+          old.added_at,
+          old.hidden ?? 0,
+          newSeriesId
+        )
+      const edited = db
+        .prepare(
+          'SELECT title, author, description, status, tags FROM series WHERE id = ? AND meta_edited = 1'
+        )
+        .get(oldSeriesId) as Record<string, unknown> | undefined
+      if (edited)
+        db.prepare(
+          'UPDATE series SET title = @title, author = @author, description = @description, status = @status, tags = @tags, meta_edited = 1 WHERE id = @id'
+        ).run({ ...edited, id: newSeriesId })
+      db.prepare(
+        'INSERT OR IGNORE INTO series_shelves (series_id, shelf_id, added_at) SELECT ?, shelf_id, added_at FROM series_shelves WHERE series_id = ?'
+      ).run(newSeriesId, oldSeriesId)
+      db.prepare(
+        'INSERT OR IGNORE INTO series_tags (series_id, tag_id) SELECT ?, tag_id FROM series_tags WHERE series_id = ?'
+      ).run(newSeriesId, oldSeriesId)
+      db.prepare('UPDATE series_merges SET source_id = ? WHERE source_id = ?').run(
+        newSeriesId,
+        oldSeriesId
+      )
+      db.prepare('UPDATE series_merges SET target_id = ? WHERE target_id = ?').run(
+        newSeriesId,
+        oldSeriesId
+      )
+      db.prepare('UPDATE reading_log SET series_id = ? WHERE series_id = ?').run(
+        newSeriesId,
+        oldSeriesId
+      )
+      // 设置以系列 id 为键；迁移后不能还指向即将删除的旧系列。
+      for (const key of ['readerPrefs', 'offlinePinnedSeries']) {
+        const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+          | { value: string }
+          | undefined
+        if (!row) continue
+        let value: unknown
+        try {
+          value = JSON.parse(row.value)
+        } catch {
+          continue
+        }
+        if (key === 'readerPrefs' && value && typeof value === 'object' && !Array.isArray(value)) {
+          const prefs = value as Record<string, unknown>
+          if (prefs[oldSeriesId] !== undefined && prefs[newSeriesId] === undefined)
+            prefs[newSeriesId] = prefs[oldSeriesId]
+          delete prefs[oldSeriesId]
+        } else if (key === 'offlinePinnedSeries' && Array.isArray(value)) {
+          value = [...new Set(value.map((id) => (id === oldSeriesId ? newSeriesId : id)))]
+        } else continue
+        db.prepare('UPDATE settings SET value = ? WHERE key = ?').run(JSON.stringify(value), key)
+      }
     }
     db.prepare('DELETE FROM series WHERE id = ?').run(oldSeriesId)
   })
@@ -466,7 +567,9 @@ export function markSeriesMetaProbed(seriesId: number): void {
   db.prepare('UPDATE series SET meta_probed = 1 WHERE id = ?').run(seriesId)
 }
 
-/** 删除书库前收集产物清单：章节行会随级联删除，必须先取 */export function libraryArtifacts(libraryId: number): {
+/** 删除书库前收集产物清单：章节行会随级联删除，必须先取 */ export function libraryArtifacts(
+  libraryId: number
+): {
   seriesIds: number[]
   chapterIds: number[]
 } {
@@ -524,9 +627,7 @@ export function upsertChapter(c: {
 }
 
 /** 逐章 upsert 的批量版：整批包进一个事务，大库扫描不会一条一提交地刷盘 */
-export function upsertChapters(
-  list: Array<Parameters<typeof upsertChapter>[0]>
-): void {
+export function upsertChapters(list: Array<Parameters<typeof upsertChapter>[0]>): void {
   const tx = db.transaction((items: Array<Parameters<typeof upsertChapter>[0]>) => {
     for (const c of items) upsertChapter(c)
   })
@@ -603,7 +704,9 @@ export function getChapterMetaIfUnchanged(
 export function countByLibrary(libraryId: number): { series: number; chapters: number } {
   const series = (
     db
-      .prepare('SELECT COUNT(*) AS c FROM series WHERE library_id = ? AND hidden = 0 AND missing = 0')
+      .prepare(
+        'SELECT COUNT(*) AS c FROM series WHERE library_id = ? AND hidden = 0 AND missing = 0'
+      )
       .get(libraryId) as {
       c: number
     }
@@ -624,8 +727,8 @@ export function countByLibrary(libraryId: number): { series: number; chapters: n
 
 /** 系列级进度聚合列（listSeries / recentlyAdded 共用）：章节总数 + 已读完章节数 */
 const SERIES_AGG = `
-  (SELECT COUNT(*) FROM chapters c WHERE c.series_id = s.id) AS total_chapters,
-  (SELECT COUNT(*) FROM progress p JOIN chapters c ON c.id = p.chapter_id
+  (SELECT COUNT(*) FROM effective_chapters c WHERE c.series_id = s.id) AS total_chapters,
+  (SELECT COUNT(*) FROM progress p JOIN effective_chapters c ON c.id = p.chapter_id
      WHERE c.series_id = s.id AND p.completed = 1) AS read_chapters`
 
 export interface SeriesListOptions {
@@ -641,7 +744,11 @@ export interface SeriesListOptions {
 }
 
 export function listSeries(opts: SeriesListOptions = {}): SeriesRow[] {
-  const conds: string[] = ['s.hidden = 0', 's.missing = 0']
+  const conds: string[] = [
+    's.hidden = 0',
+    's.missing = 0',
+    's.id NOT IN (SELECT source_id FROM series_merges)'
+  ]
   const params: Record<string, unknown> = {}
 
   if (opts.libraryId) {
@@ -675,15 +782,15 @@ export function listSeries(opts: SeriesListOptions = {}): SeriesRow[] {
   }
   if (opts.filter === 'unread') {
     conds.push(
-      'NOT EXISTS (SELECT 1 FROM progress p JOIN chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id AND p.completed = 1)'
+      'NOT EXISTS (SELECT 1 FROM progress p JOIN effective_chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id AND p.completed = 1)'
     )
   } else if (opts.filter === 'reading') {
     conds.push(
-      'EXISTS (SELECT 1 FROM progress p JOIN chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id AND p.completed = 0)'
+      'EXISTS (SELECT 1 FROM progress p JOIN effective_chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id AND p.completed = 0)'
     )
   } else if (opts.filter === 'read') {
     conds.push(
-      'EXISTS (SELECT 1 FROM progress p JOIN chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id)'
+      'EXISTS (SELECT 1 FROM progress p JOIN effective_chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id)'
     )
   }
 
@@ -692,7 +799,7 @@ export function listSeries(opts: SeriesListOptions = {}): SeriesRow[] {
   const order =
     opts.filter === 'read'
       ? `ORDER BY (SELECT MAX(p.updated_at) FROM progress p
-           JOIN chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id) DESC`
+           JOIN effective_chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id) DESC`
       : opts.filter === 'recent'
         ? 'ORDER BY s.added_at DESC'
         : 'ORDER BY s.title COLLATE NOCASE'
@@ -714,11 +821,31 @@ export function getSeries(id: number): SeriesRow | undefined {
 }
 
 export function chaptersBySeries(seriesId: number): ChapterWithProgress[] {
+  const rows = db
+    .prepare(
+      `SELECT c.*, p.page AS read_page, p.completed AS completed, p.updated_at AS read_updated_at
+       FROM effective_chapters c LEFT JOIN progress p ON p.chapter_id = c.id
+       WHERE c.series_id = ? ORDER BY c.sort_index, c.id`
+    )
+    .all(seriesId) as ChapterWithProgress[]
+  if (new Set(rows.map((row) => row.origin_series_id)).size > 1) {
+    rows.sort(
+      (a, b) =>
+        (a.volume ?? '').localeCompare(b.volume ?? '', undefined, { numeric: true }) ||
+        (a.number ?? 0) - (b.number ?? 0) ||
+        a.title.localeCompare(b.title, undefined, { numeric: true }) ||
+        a.sort_index - b.sort_index ||
+        a.id - b.id
+    )
+  }
+  return rows
+}
+
+/** 备份按真实来源路径对账，避免合并显示把 JSON 进度归到错误目录。 */
+export function sourceChaptersBySeries(seriesId: number): ChapterWithProgress[] {
   return db
     .prepare(
-      `SELECT c.*, p.page AS read_page, p.completed AS completed
-       FROM chapters c LEFT JOIN progress p ON p.chapter_id = c.id
-       WHERE c.series_id = ? ORDER BY c.sort_index`
+      'SELECT c.*, p.page AS read_page, p.completed, p.updated_at AS read_updated_at FROM chapters c LEFT JOIN progress p ON p.chapter_id = c.id WHERE c.series_id = ? ORDER BY c.sort_index, c.id'
     )
     .all(seriesId) as ChapterWithProgress[]
 }
@@ -726,17 +853,20 @@ export function chaptersBySeries(seriesId: number): ChapterWithProgress[] {
 export function getChapter(id: number): (ChapterRow & { series_title: string }) | undefined {
   return db
     .prepare(
-      `SELECT c.*, s.title AS series_title FROM chapters c JOIN series s ON s.id = c.series_id WHERE c.id = ?`
+      `SELECT c.*, s.title AS series_title FROM effective_chapters c JOIN series s ON s.id = c.series_id WHERE c.id = ?`
     )
     .get(id) as (ChapterRow & { series_title: string }) | undefined
 }
 
 /** 按文件路径找章节（系统文件关联：双击文件扫描入库后取章节 id） */
 export function getChapterByPath(path: string): ChapterRow | undefined {
-  return db.prepare('SELECT * FROM chapters WHERE path = ?').get(path) as ChapterRow | undefined
+  return db.prepare('SELECT * FROM effective_chapters WHERE path = ?').get(path) as
+    | ChapterRow
+    | undefined
 }
 
 export interface ChapterSource {
+  libraryId: number
   libraryKind: string
   familyId: string | null
 }
@@ -745,7 +875,7 @@ export interface ChapterSource {
 export function getChapterSource(chapterId: number): ChapterSource | undefined {
   return db
     .prepare(
-      `SELECT l.kind AS libraryKind, l.family_id AS familyId
+      `SELECT l.id AS libraryId, l.kind AS libraryKind, l.family_id AS familyId
        FROM chapters c JOIN series s ON s.id = c.series_id JOIN libraries l ON l.id = s.library_id
        WHERE c.id = ?`
     )
@@ -756,7 +886,7 @@ export function getChapterSource(chapterId: number): ChapterSource | undefined {
 export function coverChapterFor(seriesId: number): ChapterRow | undefined {
   return db
     .prepare(
-      `SELECT * FROM chapters WHERE series_id = ?
+      `SELECT * FROM effective_chapters WHERE series_id = ?
        ORDER BY CASE WHEN kind = 'cfolder' THEN 0 ELSE 1 END, sort_index LIMIT 1`
     )
     .get(seriesId) as ChapterRow | undefined
@@ -776,12 +906,14 @@ export interface CloudChapterCacheRow {
 export function cloudChapterRows(): CloudChapterCacheRow[] {
   return db
     .prepare(
-      `SELECT l.id AS libraryId, c.id AS chapterId, c.series_id AS seriesId, s.title AS seriesTitle,
+      `SELECT l.id AS libraryId, c.id AS chapterId, COALESCE(m.target_id, c.series_id) AS seriesId, COALESCE(t.title, s.title) AS seriesTitle,
               c.kind, c.path, c.cloud_file_id AS cloudFileId
        FROM chapters c
        JOIN series s ON s.id = c.series_id
        JOIN libraries l ON l.id = s.library_id
-       WHERE l.kind IN ('cloud189', '115')`
+       LEFT JOIN series_merges m ON m.source_id = c.series_id
+       LEFT JOIN series t ON t.id = m.target_id
+       WHERE l.kind IN ('cloud189', '115', 'webdav')`
     )
     .all() as CloudChapterCacheRow[]
 }
@@ -814,7 +946,12 @@ function isFkError(err: unknown): boolean {
   )
 }
 
-export function saveProgress(chapterId: number, page: number, completed: boolean): void {
+export function saveProgress(
+  chapterId: number,
+  page: number,
+  completed: boolean,
+  options: { updatedAt?: number; trackReading?: boolean } = {}
+): void {
   // 翻页即触发（节流后仍然高频）：语句只编译一次
   saveProgressStmt ??= db.prepare(
     `INSERT INTO progress (chapter_id, page, completed, updated_at) VALUES (?, ?, ?, ?)
@@ -831,19 +968,19 @@ export function saveProgress(chapterId: number, page: number, completed: boolean
   const delta = old ? page - old.page : page + 1
 
   try {
-    saveProgressStmt.run(chapterId, page, completed ? 1 : 0, Date.now())
+    saveProgressStmt.run(chapterId, page, completed ? 1 : 0, options.updatedAt ?? Date.now())
   } catch (err) {
     if (isFkError(err)) return
     throw err
   }
 
-  if (delta > 0) {
-    chapterSeriesStmt ??= db.prepare('SELECT series_id FROM chapters WHERE id = ?')
+  if (delta > 0 && options.trackReading !== false) {
+    chapterSeriesStmt ??= db.prepare('SELECT series_id FROM effective_chapters WHERE id = ?')
     logInsertStmt ??= db.prepare(
       `INSERT INTO reading_log (chapter_id, series_id, day, pages, ms, at) VALUES (?, ?, ?, ?, ?, ?)`
     )
     const ch = chapterSeriesStmt.get(chapterId) as { series_id: number } | undefined
-    // ms（阅读时长）暂不采集，留 0 给未来埋点
+    // 翻页事件只记页数；活跃时长由独立心跳采集，避免重复累计。
     try {
       logInsertStmt.run(chapterId, ch?.series_id ?? 0, localDay(), delta, 0, Date.now())
     } catch (err) {
@@ -888,11 +1025,11 @@ export function continueReading(limit: number): ContinueRow[] {
                   ORDER BY p2.updated_at DESC, p2.chapter_id DESC
                 ) AS rn
          FROM progress p2
-         JOIN chapters c2 ON c2.id = p2.chapter_id
+         JOIN effective_chapters c2 ON c2.id = p2.chapter_id
          WHERE p2.completed = 0
        ) latest
        JOIN progress p ON p.chapter_id = latest.cid
-       JOIN chapters c ON c.id = latest.cid
+       JOIN effective_chapters c ON c.id = latest.cid
        JOIN series s ON s.id = c.series_id
        WHERE latest.rn = 1 AND s.hidden = 0 AND s.missing = 0
        ORDER BY p.updated_at DESC
@@ -906,7 +1043,7 @@ export function recentlyAdded(limit: number): SeriesRow[] {
   return db
     .prepare(
       `SELECT s.*, ${SERIES_AGG}
-       FROM series s WHERE s.hidden = 0 AND s.missing = 0 ORDER BY s.added_at DESC LIMIT ?`
+       FROM series s WHERE s.hidden = 0 AND s.missing = 0 AND s.id NOT IN (SELECT source_id FROM series_merges) ORDER BY s.added_at DESC LIMIT ?`
     )
     .all(limit) as SeriesRow[]
 }
@@ -1017,8 +1154,9 @@ export function setSeriesTags(seriesId: number, names: string[]): void {
 // ---------- 阅读统计 ----------
 
 export interface ReadingStats {
+  totalMinutes: number
   /** 有阅读记录的日期及其当日页数（升序；只含最近 days 天） */
-  days: Array<{ day: string; pages: number }>
+  days: Array<{ day: string; pages: number; minutes: number }>
   /** 截至今天（或昨天）的连续阅读天数 */
   streak: number
   totalPages: number
@@ -1033,9 +1171,9 @@ export function readingStats(days = 365): ReadingStats {
   start.setDate(start.getDate() - (windowDays - 1))
   const rows = db
     .prepare(
-      `SELECT day, SUM(pages) AS pages FROM reading_log WHERE day >= ? GROUP BY day ORDER BY day`
+      `SELECT day, SUM(pages) AS pages, SUM(ms) / 60000.0 AS minutes FROM reading_log WHERE day >= ? AND day <= ? GROUP BY day ORDER BY day`
     )
-    .all(localDay(start)) as Array<{ day: string; pages: number }>
+    .all(localDay(start), localDay()) as Array<{ day: string; pages: number; minutes: number }>
 
   const totalPages = rows.reduce((sum, r) => sum + r.pages, 0)
   let bestDay: { day: string; pages: number } | null = null
@@ -1053,7 +1191,24 @@ export function readingStats(days = 365): ReadingStats {
     cursor.setDate(cursor.getDate() - 1)
   }
 
-  return { days: rows, streak, totalPages, totalDays: rows.length, bestDay }
+  return {
+    days: rows,
+    streak,
+    totalPages,
+    totalDays: rows.length,
+    bestDay,
+    totalMinutes: rows.reduce((sum, row) => sum + row.minutes, 0)
+  }
+}
+
+/** 时长独立于翻页增量，静止阅读也记入，但单次最多两分钟。 */
+export function logReadingTime(chapterId: number, ms: number): void {
+  if (!Number.isSafeInteger(ms) || ms <= 0 || ms > 120000) throw new Error('阅读时长参数无效')
+  const chapter = getChapter(chapterId)
+  if (!chapter) return
+  db.prepare(
+    'INSERT INTO reading_log (chapter_id, series_id, day, pages, ms, at) VALUES (?, ?, ?, 0, ?, ?)'
+  ).run(chapterId, chapter.series_id, localDay(), ms, Date.now())
 }
 
 // ---------- 跨话导航 ----------
@@ -1076,14 +1231,12 @@ export interface Neighbors {
 /** 同系列内按 sort_index 的前后话（阅读器末页进下一话用） */
 export function neighborChapters(chapterId: number): Neighbors | null {
   const row = db
-    .prepare('SELECT series_id, sort_index FROM chapters WHERE id = ?')
+    .prepare('SELECT series_id, sort_index FROM effective_chapters WHERE id = ?')
     .get(chapterId) as { series_id: number; sort_index: number } | undefined
   if (!row) return null
-  const all = db
-    .prepare(
-      'SELECT id, title, page_count, kind FROM chapters WHERE series_id = ? ORDER BY sort_index'
-    )
-    .all(row.series_id) as NeighborChapter[]
+  const all: NeighborChapter[] = chaptersBySeries(row.series_id).map(
+    ({ id, title, page_count, kind }) => ({ id, title, page_count, kind })
+  )
   const index = all.findIndex((c) => c.id === chapterId)
   return {
     index,
@@ -1123,7 +1276,7 @@ export function bookmarksForSeries(seriesId: number): BookmarkRow[] {
   return db
     .prepare(
       `SELECT b.chapter_id, c.title AS chapter_title, b.page, b.created_at
-       FROM bookmarks b JOIN chapters c ON c.id = b.chapter_id
+       FROM bookmarks b JOIN effective_chapters c ON c.id = b.chapter_id
        WHERE c.series_id = ? ORDER BY b.created_at DESC`
     )
     .all(seriesId) as BookmarkRow[]
@@ -1132,7 +1285,9 @@ export function bookmarksForSeries(seriesId: number): BookmarkRow[] {
 /** 某话已加书签的页码列表（升序，导出用） */
 export function bookmarkPages(chapterId: number): number[] {
   return (
-    db.prepare('SELECT page FROM bookmarks WHERE chapter_id = ? ORDER BY page').all(chapterId) as Array<{ page: number }>
+    db
+      .prepare('SELECT page FROM bookmarks WHERE chapter_id = ? ORDER BY page')
+      .all(chapterId) as Array<{ page: number }>
   ).map((r) => r.page)
 }
 
@@ -1182,7 +1337,7 @@ export function savePageDims(chapterId: number, dims: PageDim[]): void {
 /** 整系列标记已读/未读：已读时页码落在末页（页数未知则保持原页码） */
 export function setSeriesProgress(seriesId: number, read: boolean): void {
   const chapters = db
-    .prepare('SELECT id, page_count FROM chapters WHERE series_id = ?')
+    .prepare('SELECT id, page_count FROM effective_chapters WHERE series_id = ?')
     .all(seriesId) as Array<{ id: number; page_count: number }>
   const tx = db.transaction(() => {
     for (const c of chapters) {
@@ -1192,7 +1347,7 @@ export function setSeriesProgress(seriesId: number, read: boolean): void {
       }
       const [p] = getProgress([c.id])
       const page = c.page_count > 0 ? c.page_count - 1 : (p?.page ?? 0)
-      saveProgress(c.id, page, true)
+      saveProgress(c.id, page, true, { trackReading: false })
     }
   })
   tx()
@@ -1201,15 +1356,15 @@ export function setSeriesProgress(seriesId: number, read: boolean): void {
 /** 重置整系列进度 */
 export function resetSeriesProgress(seriesId: number): void {
   db.prepare(
-    'DELETE FROM progress WHERE chapter_id IN (SELECT id FROM chapters WHERE series_id = ?)'
+    'DELETE FROM progress WHERE chapter_id IN (SELECT id FROM effective_chapters WHERE series_id = ?)'
   ).run(seriesId)
 }
 
 /** 单话标记已读/未读（章节列表的勾选） */
 export function setChapterCompleted(chapterId: number, completed: boolean): void {
-  const ch = db
-    .prepare('SELECT page_count FROM chapters WHERE id = ?')
-    .get(chapterId) as { page_count: number } | undefined
+  const ch = db.prepare('SELECT page_count FROM chapters WHERE id = ?').get(chapterId) as
+    | { page_count: number }
+    | undefined
   if (!ch) return
   if (!completed) {
     db.prepare('UPDATE progress SET completed = 0 WHERE chapter_id = ?').run(chapterId)
@@ -1217,5 +1372,5 @@ export function setChapterCompleted(chapterId: number, completed: boolean): void
   }
   const [p] = getProgress([chapterId])
   const page = ch.page_count > 0 ? ch.page_count - 1 : (p?.page ?? 0)
-  saveProgress(chapterId, page, true)
+  saveProgress(chapterId, page, true, { trackReading: false })
 }

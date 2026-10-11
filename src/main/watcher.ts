@@ -1,6 +1,7 @@
 import { watch, type FSWatcher } from 'chokidar'
 import { listLibraries } from './db'
-import { rescanQuietly } from './rescan'
+import { queueRescan } from './rescan'
+import { broadcast } from './events'
 
 /**
  * 本地书库文件监听：增删/替换压缩包后自动增量重扫（去抖 5s）。
@@ -29,7 +30,7 @@ export function startWatchers(): void {
         lib.id,
         setTimeout(() => {
           timers.delete(lib.id)
-          void rescanQuietly(lib.id)
+          void queueRescan(lib.id)
         }, 5000)
       )
     }
@@ -38,6 +39,13 @@ export function startWatchers(): void {
     watcher.on('addDir', schedule)
     watcher.on('unlinkDir', schedule)
     watcher.on('change', schedule)
+    watcher.on('error', (err) => {
+      broadcast('scan:notice', {
+        libraryId: lib.id,
+        level: 'warn',
+        message: `书库文件监听失败，请手动重扫：${err instanceof Error ? err.message : String(err)}`
+      })
+    })
     watchers.set(lib.id, watcher)
   }
 }

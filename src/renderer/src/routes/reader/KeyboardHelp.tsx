@@ -1,5 +1,6 @@
 import { X } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
+import { useModalFocus } from '@/lib/modalFocus'
 
 /**
  * 快捷键帮助（? 键 / 顶栏按钮）：把快捷键画在一块键盘上，
@@ -59,7 +60,7 @@ const ROWS: Cap[][] = [
     { k: 'Tab', u: 1.5 },
     { k: 'Q' },
     { k: 'W' },
-    { k: 'E' },
+    { k: 'E', hot: true, act: '增强' },
     { k: 'R', hot: true },
     { k: 'T', hot: true },
     { k: 'Y' },
@@ -77,7 +78,7 @@ const ROWS: Cap[][] = [
     { k: 'S', hot: true },
     { k: 'D', hot: true },
     { k: 'F', hot: true },
-    { k: 'G' },
+    { k: 'G', hot: true },
     { k: 'H' },
     { k: 'J' },
     { k: 'K' },
@@ -130,7 +131,7 @@ const LEGEND: Array<[string, string]> = [
   ['上一页', '退格 / ← / ↑ / PgUp / 点击后退侧'],
   ['点击翻页', '左右 1/3 区域，随阅读方向；末屏自动跨话'],
   ['末页继续翻', '自动进入下一话；首页回退到上一话末页'],
-  ['老板键 Alt+X', '全局隐藏窗口（左右 Alt 均可，Alt+Tab 也不见），再按一次恢复'],
+  ['__BOSS_KEY__', '__BOSS_KEY_DESC__'],
   ['跨页配对 C', '双页模式：切换两两配对的起始偏移'],
   ['阅读模式 M', '单页 / 双页 / 条漫循环'],
   ['方向 D', '日漫（从右往左）/ 西漫（从左往右）'],
@@ -139,8 +140,10 @@ const LEGEND: Array<[string, string]> = [
   ['Home / End', '第一页 / 最后一页'],
   ['书签 B', '收藏 / 取消当前页'],
   ['沉浸 ⏎', '隐藏界面，鼠标移动自动恢复'],
-  ['旋转 R', '逆时针旋转 90°'],
+  ['旋转 R', '顺时针旋转 90°'],
   ['缩略图 T', '页面缩略图条'],
+  ['页面全览 G', '全章缩略图网格，点击跳页'],
+  ['图像增强 E', '开启 / 关闭锐化、对比度与裁白边'],
   ['全屏 F', '全屏切换'],
   ['帮助 ?', '打开本面板'],
   ['返回 Esc', '退出全屏 / 返回书架']
@@ -184,48 +187,81 @@ function Row({ caps }: { caps: Cap[] }): ReactNode {
 }
 
 export function KeyboardHelp({ onClose }: { onClose: () => void }): ReactNode {
+  const titleId = useId()
+  const focus = useModalFocus(onClose)
+  // 老板键实际生效键：Alt+X 被占用时会降级到候选里的其他键，写死会误导
+  const [bossKey, setBossKey] = useState('')
+  useEffect(() => {
+    void window.yudu.bossKey
+      .get()
+      .then((k) => setBossKey(k.replace('Control+', 'Ctrl+')))
+      .catch(() => {})
+  }, [])
+  const legend = LEGEND.map(([keys, desc]) =>
+    keys === '__BOSS_KEY__'
+      ? [
+          bossKey ? `老板键 ${bossKey}` : '老板键（未注册）',
+          bossKey
+            ? '全局隐藏窗口（左右 Alt 均可，Alt+Tab 也不见），再按一次恢复；设置里可更换'
+            : '热键被其他程序占用，可在设置里换一个键'
+        ]
+      : [keys, desc]
+  ) as Array<[string, string]>
+
   return (
     <div
       className="fixed inset-0 z-40 grid place-items-center bg-black/50 p-4 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
+        ref={focus.ref}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
         className="animate-scale-in max-h-[92vh] w-[680px] max-w-full overflow-y-auto rounded-2xl border border-border/50 bg-background/80 p-5 shadow-lg backdrop-blur-md"
+        onKeyDown={focus.onKeyDown}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">快捷键</h3>
+          <h3 id={titleId} className="text-sm font-semibold">
+            快捷键
+          </h3>
           <button
             onClick={onClose}
-            className="grid size-7 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            type="button"
+            aria-label="关闭快捷键帮助"
+            className="grid size-7 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring/60"
           >
             <X className="size-4" />
           </button>
         </div>
 
         {/* 键盘图：左侧主键区，右侧导航/方向键簇 */}
-        <div className="mb-5 flex items-end justify-center gap-5 pt-5">
-          <div className="flex flex-col gap-[3px]">
-            {ROWS.map((caps, i) => (
-              <Row key={i} caps={caps} />
-            ))}
-          </div>
-          <div className="flex flex-col gap-[3px] pb-[26px]">
-            <div className="grid grid-cols-2 gap-[3px]">
-              {NAV.map((cap, i) => (
-                <KeyCap key={i} cap={cap} />
+        <div className="mb-5 overflow-x-auto" aria-hidden="true" tabIndex={-1}>
+          <div className="flex w-max min-w-full items-end justify-center gap-5 pt-5">
+            <div className="flex flex-col gap-[3px]">
+              {ROWS.map((caps, i) => (
+                <Row key={i} caps={caps} />
               ))}
             </div>
-            <div className="mt-2 flex flex-col gap-[3px]">
-              <div className="flex gap-[3px]">
-                {ARROW_TOP.map((c, i) => (
-                  <KeyCap key={i} cap={c} />
+            <div className="flex flex-col gap-[3px] pb-[26px]">
+              <div className="grid grid-cols-2 gap-[3px]">
+                {NAV.map((cap, i) => (
+                  <KeyCap key={i} cap={cap} />
                 ))}
               </div>
-              <div className="flex gap-[3px]">
-                {ARROW_BOTTOM.map((c, i) => (
-                  <KeyCap key={i} cap={c} />
-                ))}
+              <div className="mt-2 flex flex-col gap-[3px]">
+                <div className="flex gap-[3px]">
+                  {ARROW_TOP.map((c, i) => (
+                    <KeyCap key={i} cap={c} />
+                  ))}
+                </div>
+                <div className="flex gap-[3px]">
+                  {ARROW_BOTTOM.map((c, i) => (
+                    <KeyCap key={i} cap={c} />
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -233,7 +269,7 @@ export function KeyboardHelp({ onClose }: { onClose: () => void }): ReactNode {
 
         {/* 速查表 */}
         <div className="grid gap-x-6 gap-y-1.5 border-t border-border/60 pt-3 text-xs sm:grid-cols-2">
-          {LEGEND.map(([keys, desc]) => (
+          {legend.map(([keys, desc]) => (
             <div key={keys} className="flex items-baseline justify-between gap-3">
               <kbd className="shrink-0 rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px]">
                 {keys}

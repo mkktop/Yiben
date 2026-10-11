@@ -4,6 +4,7 @@ import { addLibrary, getChapterByPath, rebuildFts } from './db'
 import { scanOneLocalSeries } from './scanner'
 import { broadcast } from './events'
 import { longPath } from './util/paths'
+import { runExclusiveScan } from './rescan'
 
 /**
  * 系统文件关联：双击 .cbz/.cbr/.cb7/.cbt/.pdf 直接进阅读器。
@@ -63,7 +64,10 @@ async function openFilePath(path: string): Promise<void> {
   try {
     const folder = dirname(path)
     const lib = addLibrary(basename(folder), folder)
-    await scanOneLocalSeries(lib.id, { folder: path, isSingleFile: true })
+    await runExclusiveScan(
+      () => scanOneLocalSeries(lib.id, { folder: path, isSingleFile: true }),
+      true
+    )
     rebuildFts()
     const chapter = getChapterByPath(path)
     if (!chapter) return

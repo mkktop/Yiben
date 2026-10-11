@@ -17,10 +17,19 @@ interface ImageViewerProps {
   /** 末屏再往后：进下一话；首页再往前：回上一话末页（单双页点击区、条漫滚动底共用） */
   onNext?: () => void
   onPrev?: () => void
+  /** 条漫条带末尾之后接不上（下一话是 PDF/页数未知）且无法交给外层时提示用户 */
+  onBlocked?: () => void
 }
 
 /** 失败重试间隔：1s → 4s（指数退避），共 2 次后转手动重试 */
 const RETRY_DELAYS = [1000, 4000]
+function readerPageUrl(chapterId: number, index: number): string { return pageUrl(chapterId, index, useReaderStore.getState()) }
+function useEnhancement(): void {
+  useReaderStore((state) => state.enhance)
+  useReaderStore((state) => state.sharpness)
+  useReaderStore((state) => state.autoTrim)
+  useReaderStore((state) => state.contrast)
+}
 
 /** 缩放按系列写入偏好（尾随防抖：滚轮连续缩放只在停手后落一次盘） */
 let zoomPersistTimer: ReturnType<typeof setTimeout> | null = null
@@ -28,31 +37,40 @@ function persistZoom(seriesId: number, zoom: number): void {
   if (zoomPersistTimer) clearTimeout(zoomPersistTimer)
   zoomPersistTimer = setTimeout(() => {
     zoomPersistTimer = null
-    if (seriesId > 0) void window.yiben.reader.setPrefs(seriesId, { zoom }).catch(() => {})
+    if (seriesId > 0) void window.yudu.reader.setPrefs(seriesId, { zoom }).catch(() => {})
   }, 600)
 }
+
+/** 条漫条带：滚过多少页之后把已加载的 <img> 换成等比占位（长会话条带无界增长的回收）。
+ *  占位用加载时记录的原始宽高比，滚回来重挂时按同比例预撑高度，滚动位置不塌缩 */
+const RECYCLE_BEHIND = 24
 
 /**
  * 单页图片：加载失败后先静默重试（云端 502/超时多数是瞬时的，换查询串强制重发），
  * 仍失败则展示手动重试占位，不再留下裂图。
+ * onNatural：加载完成后回报原图尺寸——条漫模式用它给回收过的页留占位高度，
+ * 滚回来重新挂载时几何不塌缩（不再触发滚动跳变）。
  */
 function PageImage({
   src,
   alt,
   className,
   style,
-  dataPage,
-  eager
+  eager,
+  onNatural
 }: {
   src: string
   alt: string
   className?: string
   style?: React.CSSProperties
-  dataPage?: number
   eager?: boolean
+  onNatural?: (w: number, h: number) => void
 }) {
   const [attempt, setAttempt] = useState(0)
   const [failed, setFailed] = useState(false)
+  const imgRef = useRef<HTMLImageElement>(null)
+  const naturalRef = useRef(onNatural)
+  naturalRef.current = onNatural
 
   // 翻页/重试换地址时复位
   useEffect(() => {
@@ -60,10 +78,17 @@ function PageImage({
     setFailed(false)
   }, [src])
 
+  // 缓存命中等瞬时完成时 onLoad 可能已经错过：complete 后补报一次
+  useEffect(() => {
+    const img = imgRef.current
+    if (img && img.complete && img.naturalWidth > 0) {
+      naturalRef.current?.(img.naturalWidth, img.naturalHeight)
+    }
+  }, [src, attempt])
+
   if (failed) {
     return (
       <div
-        data-page={dataPage}
         className="grid place-items-center gap-2 bg-white/5 text-white/70"
         style={{ aspectRatio: '2 / 3', ...style }}
       >
@@ -84,11 +109,12 @@ function PageImage({
   return (
     <img
       key={attempt}
+      ref={imgRef}
       src={attempt > 0 ? `${src}?r=${attempt}` : src}
-      data-page={dataPage}
       alt={alt}
       draggable={false}
       loading={eager ? 'eager' : 'lazy'}
+      onLoad={(e) => naturalRef.current?.(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
       onError={() => {
         if (attempt < RETRY_DELAYS.length) {
           window.setTimeout(() => setAttempt((a) => a + 1), RETRY_DELAYS[attempt])
@@ -109,6 +135,7 @@ export const ImageViewer = memo(function ImageViewer({
   onNext,
   onPrev
 }: ImageViewerProps) {
+  useEnhancement()
   // 选择器订阅：整库解构会让无关状态（immersive/thumbs 等）变化时也整树 reconcile
   const mode = useReaderStore((s) => s.mode)
   const fit = useReaderStore((s) => s.fit)
@@ -181,10 +208,9 @@ export const ImageViewer = memo(function ImageViewer({
     prevLayout.current = key
   }, [mode, fit, applyZoom])
 
-  // Ctrl/⌘ + 滚轮缩放（监听器只挂一次，读 zoomRef 避免闭包过期）；
-  // 以光标位置为锚点——指哪放大哪
-  const zoomRef = useRef(zoom)
-  zoomRef.current = zoom
+  // Ctrl/⌘ + 滚轮缩放（监听器只挂一次）；以光标位置为锚点——指哪放大哪。
+  // zoom 每次从 store 现读而不是闭包：触控板在同一帧里连发多个 wheel 事件时，
+  // 基于渲染间隙的旧值会丢步
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -193,7 +219,7 @@ export const ImageViewer = memo(function ImageViewer({
       e.preventDefault()
       const rect = el.getBoundingClientRect()
       applyZoom(
-        zoomRef.current + (e.deltaY > 0 ? -0.1 : 0.1),
+        useReaderStore.getState().zoom + (e.deltaY > 0 ? -0.1 : 0.1),
         e.clientX - rect.left,
         e.clientY - rect.top
       )
@@ -273,6 +299,8 @@ export const ImageViewer = memo(function ImageViewer({
       className="relative flex h-full w-full cursor-grab overflow-auto active:cursor-grabbing"
       onMouseDown={onMouseDown}
       onClick={(e) => {
+        // 按钮点击（缩放控制/加载重试等）不算翻页，也不冒泡进翻页区判定
+        if ((e.target as HTMLElement).closest('button')) return
         // 刚结束的拖拽平移不算点击，不翻页
         if (dragMovedRef.current) {
           dragMovedRef.current = false
@@ -296,7 +324,7 @@ export const ImageViewer = memo(function ImageViewer({
           {pagesToShow.map((p) => (
             <PageImage
               key={p}
-              src={pageUrl(chapterId, p)}
+              src={readerPageUrl(chapterId, p)}
               alt={`第 ${p + 1} 页`}
               eager
               style={fitImgStyle}
@@ -308,7 +336,7 @@ export const ImageViewer = memo(function ImageViewer({
         <div className="flex h-full w-full items-center justify-center">
           <PageImage
             key={pagesToShow[0]}
-            src={pageUrl(chapterId, pagesToShow[0])}
+            src={readerPageUrl(chapterId, pagesToShow[0])}
             alt={`第 ${pagesToShow[0] + 1} 页`}
             eager
             style={originalImgStyle}
@@ -380,9 +408,11 @@ export const WebtoonViewer = memo(function WebtoonViewer({
   seriesId,
   initialPage = 0,
   onPosition = () => {},
-  onNext
+  onNext,
+  onBlocked
 }: ImageViewerProps) {
   const storePageCount = useReaderStore((s) => s.pageCount)
+  useEnhancement()
   const zoom = useReaderStore((s) => s.zoom)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -458,7 +488,8 @@ export const WebtoonViewer = memo(function WebtoonViewer({
 
   /** 拼接进来的后续话（key 重挂后必为空起步） */
   const [extras, setExtras] = useState<StripChapter[]>([])
-  const [fetching, setFetching] = useState(false)
+  /** 请求在途标记（ref 而非 state：观察者同一帧内可能连发两次，state 闭包会双双漏过） */
+  const fetchingRef = useRef(false)
   const extrasRef = useRef(extras)
   extrasRef.current = extras
   /** 条带末话确认拼不出下一话（没有下一话/PDF/页数未知） */
@@ -474,9 +505,9 @@ export const WebtoonViewer = memo(function WebtoonViewer({
   const nextStart = tail ? tail.start + tail.pageCount : baseCount
 
   const tryAppend = (): void => {
-    if (fetching) return
-    setFetching(true)
-    void window.yiben.reader
+    if (fetchingRef.current) return
+    fetchingRef.current = true
+    void window.yudu.reader
       .neighbors(tailId)
       .then((n) => {
         const nx = n?.next
@@ -492,10 +523,17 @@ export const WebtoonViewer = memo(function WebtoonViewer({
         noMoreRef.current = false
       })
       .catch(() => {})
-      .finally(() => setFetching(false))
+      .finally(() => {
+        fetchingRef.current = false
+      })
   }
   const tryAppendRef = useRef(tryAppend)
   tryAppendRef.current = tryAppend
+  const onBlockedRef = useRef(onBlocked)
+  onBlockedRef.current = onBlocked
+
+  // 页面原始宽高（全局页号 → w/h）：回收占位与重挂预撑高度都靠它，几何稳定不跳变
+  const dimsRef = useRef(new Map<number, { w: number; h: number }>())
 
   /** 条带全局页号 → 视口所在话与话内局部页码 */
   const locate = (global: number): StripPos => {
@@ -518,8 +556,12 @@ export const WebtoonViewer = memo(function WebtoonViewer({
   // 把恢复页覆盖成 0 还节流落库（这正是条漫进度回退 bug 的根因）
   const readyForReport = useRef(initialPage <= 0)
 
+  // 视口当前的全局页号：驱动远端已滚过的页回收（见 strip 渲染处的 RECYCLE_BEHIND）
+  const [curGlobal, setCurGlobal] = useState(initialPage)
+
   useCurrentPageObserver(ref, (global) => {
     if (!readyForReport.current) return
+    setCurGlobal(global)
     onPosition(locate(global))
     // 距条带末尾（nextStart = 拼接话的全局起点）不足 2 页就提前拼接，滚动到分界时不顿挫
     if (baseCount > 0 && !noMoreRef.current && global >= nextStart - 2) {
@@ -591,6 +633,9 @@ export const WebtoonViewer = memo(function WebtoonViewer({
       e.preventDefault()
       if (noMoreRef.current) {
         if (extrasRef.current.length === 0) onNext?.()
+        // 已拼接过且末话之后接不上：外层的「下一话」与条带末话不一致，跳过去会错话——
+        // 明确告知用户走顶栏跳话，而不是无声地卡住
+        else onBlockedRef.current?.()
         return
       }
       tryAppendRef.current()
@@ -613,36 +658,62 @@ export const WebtoonViewer = memo(function WebtoonViewer({
           className="mx-auto"
           style={{ width: `calc(min(100%, 768px) * ${zoom})`, maxWidth: 'none' }}
         >
-          {Array.from({ length: baseCount }, (_, p) => (
+        {Array.from({ length: baseCount }, (_, p) => {
+          const dims = dimsRef.current.get(p)
+          const recycled = curGlobal - p > RECYCLE_BEHIND && dims !== undefined
+          return (
             // 占位高度：懒加载图高度为 0，没有保底高度时恢复定位/缩放锚点全部失真；
             // 图片加载后真实高度大于占位自然撑开，条漫页通常远高于此值
             <div key={p} data-page={p} style={{ minHeight: '50vh' }}>
-              <PageImage
-                src={pageUrl(chapterId, p)}
-                alt={`第 ${p + 1} 页`}
-                eager={p >= initialPage - 6 && p <= initialPage + 2}
-                className="block w-full"
-              />
-            </div>
-          ))}
-          {extras.map((c) => (
-            <Fragment key={c.id}>
-              <div className="my-8 flex items-center gap-3 px-8 text-xs text-white/40">
-                <span className="h-px flex-1 bg-white/10" />
-                下一话 · {c.title}
-                <span className="h-px flex-1 bg-white/10" />
-              </div>
-              {Array.from({ length: c.pageCount }, (_, j) => (
+              {recycled && dims ? (
+                <div className="w-full" style={{ aspectRatio: `${dims.w} / ${dims.h}` }} />
+              ) : (
                 <PageImage
-                  key={`${c.id}-${j}`}
-                  src={pageUrl(c.id, j)}
-                  alt={`${c.title} 第 ${j + 1} 页`}
-                  dataPage={c.start + j}
+                  src={readerPageUrl(chapterId, p)}
+                  alt={`第 ${p + 1} 页`}
+                  eager={p >= initialPage - 6 && p <= initialPage + 2}
                   className="block w-full"
+                  style={dims ? { aspectRatio: `${dims.w} / ${dims.h}` } : undefined}
+                  onNatural={(w, h) => {
+                    if (w > 0 && h > 0) dimsRef.current.set(p, { w, h })
+                  }}
                 />
-              ))}
-            </Fragment>
-          ))}
+              )}
+            </div>
+          )
+        })}
+        {extras.map((c) => (
+          <Fragment key={c.id}>
+            <div className="my-8 flex items-center gap-3 px-8 text-xs text-white/40">
+              <span className="h-px flex-1 bg-white/10" />
+              下一话 · {c.title}
+              <span className="h-px flex-1 bg-white/10" />
+            </div>
+            {Array.from({ length: c.pageCount }, (_, j) => {
+              const g = c.start + j
+              const dims = dimsRef.current.get(g)
+              const recycled = curGlobal - g > RECYCLE_BEHIND && dims !== undefined
+              return (
+                // data-page 挂在包装层：占位/重试/回收的任何形态下观察者都追得到这一页
+                <div key={`${c.id}-${j}`} data-page={g} style={{ minHeight: '50vh' }}>
+                  {recycled && dims ? (
+                    <div className="w-full" style={{ aspectRatio: `${dims.w} / ${dims.h}` }} />
+                  ) : (
+                    <PageImage
+                      src={readerPageUrl(c.id, j)}
+                      alt={`${c.title} 第 ${j + 1} 页`}
+                      className="block w-full"
+                      style={dims ? { aspectRatio: `${dims.w} / ${dims.h}` } : undefined}
+                      onNatural={(w, h) => {
+                        if (w > 0 && h > 0) dimsRef.current.set(g, { w, h })
+                      }}
+                    />
+                  )}
+                </div>
+              )
+            })}
+          </Fragment>
+        ))}
         </div>
       </div>
 

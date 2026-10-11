@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   CopyX,
@@ -12,7 +12,6 @@ import {
   Trash2,
   Upload
 } from 'lucide-react'
-import { useThemeStore } from '@/stores/theme'
 import { useDataStore } from '@/stores/data'
 import { useUpdateStore } from '@/stores/update'
 import { Button } from '@/components/ui/button'
@@ -20,6 +19,10 @@ import { Input } from '@/components/ui/input'
 import { Card, CardBody, CardHeader } from '@/components/ui/card'
 import { cn, errorMessage } from '@/lib/utils'
 import type { DiagnoseReport, ReaderPrefs } from '@shared/types'
+import { BackupSection } from '@/components/BackupSection'
+import { ReaderAppearance } from '@/components/ReaderAppearance'
+import { ThemeSettings } from '@/components/ThemeSettings'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 
 function fmtBytes(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
@@ -38,11 +41,13 @@ function ToggleRow({
   title,
   desc,
   checked,
+  disabled = false,
   onChange
 }: {
   title: string
   desc: string
   checked: boolean
+  disabled?: boolean
   onChange: (v: boolean) => void
 }) {
   return (
@@ -53,10 +58,12 @@ function ToggleRow({
       </div>
       <button
         role="switch"
+        aria-label={title}
         aria-checked={checked}
+        disabled={disabled}
         onClick={() => onChange(!checked)}
         className={cn(
-          'relative h-6 w-11 shrink-0 rounded-full transition-colors',
+          'relative h-6 w-11 shrink-0 rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50',
           checked ? 'bg-primary hover:bg-primary/85' : 'bg-muted hover:bg-foreground/15'
         )}
       >
@@ -75,16 +82,41 @@ function ToggleRow({
 function ReaderDefaultsSection() {
   const [defaults, setDefaults] = useState<ReaderPrefs>({})
   const [saved, setSaved] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const revision = useRef(0)
 
   useEffect(() => {
-    void window.yiben.reader.getDefaults().then(setDefaults)
+    void window.yudu.reader.getDefaults().then(setDefaults)
+      .catch((cause) => setError(errorMessage(cause)))
+      .finally(() => setLoading(false))
   }, [])
 
+  useEffect(() => {
+    if (!saved) return
+    const timer = setTimeout(() => setSaved(false), 1500)
+    return () => clearTimeout(timer)
+  }, [saved])
+
   const patch = (p: ReaderPrefs): void => {
-    void window.yiben.reader.setDefaults(p).then((merged) => {
+    const request = ++revision.current
+    setDefaults((current) => ({ ...current, ...p }))
+    setSaved(false)
+    setSaving(true)
+    setError('')
+    void window.yudu.reader.setDefaults(p).then((merged) => {
+      if (request !== revision.current) return
       setDefaults(merged)
       setSaved(true)
-      setTimeout(() => setSaved(false), 1500)
+    }).catch((cause) => {
+      if (request !== revision.current) return
+      setError(`保存失败：${errorMessage(cause)}`)
+      void window.yudu.reader.getDefaults().then((current) => {
+        if (request === revision.current) setDefaults(current)
+      }).catch(() => {})
+    }).finally(() => {
+      if (request === revision.current) setSaving(false)
     })
   }
 
@@ -96,6 +128,7 @@ function ReaderDefaultsSection() {
     <Card>
       <CardHeader title="阅读" />
       <CardBody>
+        <fieldset disabled={loading} className="space-y-4 disabled:opacity-50">
         <ChoiceRow
           label="翻页模式"
           options={[
@@ -122,10 +155,13 @@ function ReaderDefaultsSection() {
           checked={rtl}
           onChange={(v) => patch({ rtl: v })}
         />
+        <ReaderAppearance prefs={defaults} onChange={patch} />
+        </fieldset>
         <p className="text-xs text-muted-foreground">
           只影响还没单独设置过的漫画；在阅读器里改过的设置按系列记忆并优先生效。
-          {saved ? ' 已保存 ✓' : ''}
+          {loading ? ' 正在加载…' : saving ? ' 正在保存…' : saved ? ' 已保存 ✓' : ''}
         </p>
+        {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       </CardBody>
     </Card>
   )
@@ -145,10 +181,11 @@ function ChoiceRow({
   return (
     <div className="flex items-center justify-between gap-4">
       <span className="text-sm font-medium">{label}</span>
-      <div className="flex gap-1 rounded-lg bg-muted p-1">
+      <div role="group" aria-label={label} className="flex gap-1 rounded-lg bg-muted p-1">
         {options.map((o) => (
           <button
             key={o.key}
+            aria-pressed={value === o.key}
             onClick={() => onChange(o.key)}
             className={cn(
               'rounded-md px-3 py-1 text-xs transition-colors',
@@ -166,14 +203,145 @@ function ChoiceRow({
 }
 
 /** 通用开关：本地库自动重扫、启动恢复上次阅读 */
+/** Electron 加速键展示格式：Control → Ctrl（与帮助面板一致） */
+function formatAccelerator(a: string): string {
+  return a.replace(/Control\+/g, 'Ctrl+')
+}
+
+const BOSS_MODIFIER_KEYS = new Set(['Control', 'Alt', 'Shift', 'Meta', 'AltGraph'])
+
+/** KeyboardEvent → Electron 加速键字符串。
+ *  只按了修饰键返回 null（尚未按主键）；不合格返回 'INVALID'：
+ *  裸字母/数字/空格会作为全局热键系统级劫持正常打字，必须包含 Ctrl 或 Alt；
+ *  F 功能键本身够独特，允许裸按。 */
+function eventToAccelerator(e: KeyboardEvent): string | null {
+  if (BOSS_MODIFIER_KEYS.has(e.key)) return null
+  const parts: string[] = []
+  if (e.ctrlKey) parts.push('Control')
+  if (e.altKey) parts.push('Alt')
+  if (e.shiftKey) parts.push('Shift')
+  const key = e.key
+  let main = ''
+  if (/^[a-z]$/i.test(key)) main = key.toUpperCase()
+  else if (/^[0-9]$/.test(key)) main = key
+  else if (/^F(?:[1-9]|1[0-9]|2[0-4])$/.test(key)) main = key
+  else if (key === ' ') main = 'Space'
+  else if (key === 'Enter') main = 'Return'
+  else if (key === 'Tab') main = 'Tab'
+  else if (key === 'Backspace') main = 'Backspace'
+  else if (key === 'Delete') main = 'Delete'
+  else if (key === 'Insert') main = 'Insert'
+  else if (key === 'Home') main = 'Home'
+  else if (key === 'End') main = 'End'
+  else if (key === 'PageUp') main = 'PageUp'
+  else if (key === 'PageDown') main = 'PageDown'
+  else if (key === 'ArrowUp') main = 'Up'
+  else if (key === 'ArrowDown') main = 'Down'
+  else if (key === 'ArrowLeft') main = 'Left'
+  else if (key === 'ArrowRight') main = 'Right'
+  else if (key.length === 1 && /^[-=[\];'`,.\\/]$/.test(key)) main = key
+  if (!main) return 'INVALID'
+  parts.push(main)
+  if (!parts.some((p) => p === 'Control' || p === 'Alt') && !main.startsWith('F')) return 'INVALID'
+  return parts.join('+')
+}
+
+/** 老板键录制器：点击进入录制态，按下组合键完成捕获，Esc 取消。
+ *  录制逻辑在 GeneralSection 的 capture 按键监听里，这里只是展示态按钮 */
+
 function GeneralSection() {
   const [autoRescan, setAutoRescan] = useState(true)
   const [resume, setResume] = useState(true)
+  const [configLoading, setConfigLoading] = useState(true)
+  const [configSaving, setConfigSaving] = useState(false)
+  const [configError, setConfigError] = useState('')
+  /** 用户设置的主键偏好（'' = 自动）；active 是实际注册成功的键 */
+  const [bossPref, setBossPref] = useState('')
+  const [bossActive, setBossActive] = useState('')
+  const [bossHint, setBossHint] = useState('')
+  const [recording, setRecording] = useState(false)
+  const [draft, setDraft] = useState('')
 
   useEffect(() => {
-    void window.yiben.config.get('autoRescan').then((v) => setAutoRescan(v !== false))
-    void window.yiben.config.get('resumeOnLaunch').then((v) => setResume(v !== false))
+    void Promise.all([
+      window.yudu.config.get('autoRescan').then((v) => setAutoRescan(v !== false)),
+      window.yudu.config.get('resumeOnLaunch').then((v) => setResume(v !== false))
+    ]).catch((cause) => setConfigError(errorMessage(cause))).finally(() => setConfigLoading(false))
+    void window.yudu.config
+      .get('bossKey')
+      .then((v) => setBossPref(typeof v === 'string' ? v : ''))
+      .catch(() => {})
+    void window.yudu.bossKey
+      .get()
+      .then(setBossActive)
+      .catch(() => {})
   }, [])
+
+  const saveConfig = (key: string, value: boolean, previous: boolean, apply: (value: boolean) => void): void => {
+    apply(value)
+    setConfigSaving(true)
+    setConfigError('')
+    void window.yudu.config.set(key, value).catch((cause) => {
+      apply(previous)
+      setConfigError(`保存失败：${errorMessage(cause)}`)
+    }).finally(() => setConfigSaving(false))
+  }
+
+  const applyBossKey = (requested: string): void => {
+    setBossPref(requested)
+    void window.yudu.bossKey
+      .set(requested)
+      .then((active) => {
+        setBossActive(active)
+        setBossHint(
+          requested && active !== requested ? '该组合键已被其他程序占用，已回退到候选键' : ''
+        )
+      })
+      .catch((e) => setBossHint(errorMessage(e)))
+  }
+
+  // 录制态的按键捕获：capture 阶段拦截（避免设置页其他快捷键先响应），Esc 取消
+  useEffect(() => {
+    if (!recording) return
+    const onKey = (e: KeyboardEvent): void => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.isComposing) return
+      if (e.key === 'Escape') {
+        setRecording(false)
+        setDraft('')
+        return
+      }
+      const accel = eventToAccelerator(e)
+      if (accel === null) {
+        // 只按住了修饰键：实时预览，等主键
+        setDraft(
+          `${[e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift']
+            .filter(Boolean)
+            .join('+')}+…`
+        )
+        return
+      }
+      if (accel === 'INVALID') {
+        setDraft('需含 Ctrl 或 Alt（F 键可单独用），换个组合')
+        return
+      }
+      setRecording(false)
+      setDraft('')
+      applyBossKey(accel)
+    }
+    const onBlur = (): void => {
+      setRecording(false)
+      setDraft('')
+    }
+    window.addEventListener('keydown', onKey, true)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('blur', onBlur)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording])
 
   return (
     <Card>
@@ -183,20 +351,63 @@ function GeneralSection() {
           title="书库文件变动自动重扫"
           desc="往本地书库文件夹里加/删漫画后自动增量更新书架（约 5 秒延迟）"
           checked={autoRescan}
+          disabled={configLoading || configSaving}
           onChange={(v) => {
-            setAutoRescan(v)
-            void window.yiben.config.set('autoRescan', v).catch(() => {})
+            saveConfig('autoRescan', v, autoRescan, setAutoRescan)
           }}
         />
         <ToggleRow
           title="启动时打开上次阅读"
-          desc="打开一本 Yiben 后直接回到上次读到的位置"
+          desc="打开雨读 Yudu 后直接回到上次读到的位置"
           checked={resume}
+          disabled={configLoading || configSaving}
           onChange={(v) => {
-            setResume(v)
-            void window.yiben.config.set('resumeOnLaunch', v).catch(() => {})
+            saveConfig('resumeOnLaunch', v, resume, setResume)
           }}
         />
+        {configError && <p role="alert" className="text-xs text-destructive">{configError}</p>}
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">老板键</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              全局隐藏/恢复窗口（任务栏与 Alt+Tab 都不显示）。点击右侧录制任意组合键，需含 Ctrl 或
+              Alt；组合键会被系统级占用，其他程序与应用内同键位的快捷键一并失效
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              onClick={() => {
+                setDraft('')
+                setRecording(true)
+              }}
+              className={cn(
+                'min-w-[8.5rem] rounded-md border px-2.5 py-1.5 text-center font-mono text-xs transition-colors',
+                recording
+                  ? 'animate-pulse border-primary bg-primary/10 text-primary'
+                  : 'border-border/60 text-foreground hover:border-primary/50 hover:bg-accent'
+              )}
+            >
+              {recording
+                ? draft || '按下组合键…'
+                : bossPref
+                  ? // 被占用回退时显示实际生效键（bossHint 会说明原因）
+                    formatAccelerator(bossActive || bossPref)
+                  : bossActive
+                    ? `自动 · ${formatAccelerator(bossActive)}`
+                    : '自动'}
+            </button>
+            {bossPref && !recording && (
+              <button
+                onClick={() => applyBossKey('')}
+                className="rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                title="清除录制的组合键，恢复按候选顺序自动挑选"
+              >
+                自动
+              </button>
+            )}
+          </div>
+        </div>
+        {bossHint && <p className="text-xs text-warning">{bossHint}</p>}
       </CardBody>
     </Card>
   )
@@ -211,10 +422,11 @@ function DataSection() {
   const doExport = (): void => {
     setBusy('export')
     setMessage('')
-    void window.yiben.data
+    void window.yudu.data
       .export()
       .then((r) => {
-        if (r) setMessage(`已导出 ${r.series} 个系列（${r.progress} 条进度、${r.bookmarks} 个书签）`)
+        if (r)
+          setMessage(`已导出 ${r.series} 个系列（${r.progress} 条进度、${r.bookmarks} 个书签）`)
       })
       .catch((e) => setMessage(errorMessage(e)))
       .finally(() => setBusy(null))
@@ -223,7 +435,7 @@ function DataSection() {
   const doImport = (): void => {
     setBusy('import')
     setMessage('')
-    void window.yiben.data
+    void window.yudu.data
       .import()
       .then((r) => {
         if (r) {
@@ -267,28 +479,42 @@ function DataSection() {
 }
 
 function CloudCacheSection() {
+  const cacheFocusRef = useRef<HTMLSpanElement>(null)
+  const [cacheError, setCacheError] = useState('')
   const [capGb, setCapGb] = useState('20')
   const [capDirty, setCapDirty] = useState(false)
   const [capSaved, setCapSaved] = useState(false)
   const [stats, setStats] = useState<{ totalBytes: number; files: number } | null>(null)
   const [list, setList] = useState<SeriesCache[]>([])
   const [busy, setBusy] = useState(false)
+  const [cacheMessage, setCacheMessage] = useState('')
+  const [confirmClear, setConfirmClear] = useState<
+    { kind: 'all'; bytes: number; files: number } | { kind: 'series'; series: SeriesCache } | null
+  >(null)
 
-  const refresh = useCallback((): void => {
-    void window.yiben.cloud.cacheStats().then(setStats)
-    void window.yiben.cloud.cacheBySeries().then(setList)
+  const refresh = useCallback(async (): Promise<void> => {
+    const [nextStats, nextList] = await Promise.all([
+      window.yudu.cloud.cacheStats(),
+      window.yudu.cloud.cacheBySeries()
+    ])
+    setStats(nextStats)
+    setList(nextList)
   }, [])
 
   useEffect(() => {
-    void window.yiben.cloud.cacheConfigGet().then((mb) => setCapGb(String(mb / 1024)))
-    refresh()
+    void window.yudu.cloud
+      .cacheConfigGet()
+      .then((mb) => setCapGb(String(mb / 1024)))
+      .catch((error) => setCacheError(errorMessage(error)))
+    void refresh().catch((error) => setCacheError(errorMessage(error)))
   }, [refresh])
 
   const saveCap = (): void => {
     const gb = Number.parseFloat(capGb)
     if (!Number.isFinite(gb) || gb <= 0) return
     setBusy(true)
-    void window.yiben.cloud
+    setCacheError('')
+    void window.yudu.cloud
       .cacheConfigSet(Math.round(gb * 1024))
       .then((mb) => {
         setCapGb(String(mb / 1024))
@@ -296,32 +522,34 @@ function CloudCacheSection() {
         setCapSaved(true)
         setTimeout(() => setCapSaved(false), 2000)
       })
+      .catch((error) => setCacheError(errorMessage(error)))
       .finally(() => setBusy(false))
   }
 
-  const clearAll = (): void => {
-    const size = stats?.totalBytes ?? 0
-    if (size <= 0) return
-    if (!window.confirm(`确定清除全部云端缓存（${fmtBytes(size)}）？\n封面与阅读进度不受影响。`)) return
+  const clearConfirmed = async (): Promise<void> => {
+    if (!confirmClear) return
     setBusy(true)
-    void window.yiben.cloud
-      .cacheClearAll()
-      .then(() => refresh())
-      .finally(() => setBusy(false))
-  }
-
-  const clearOne = (seriesId: number): void => {
-    setBusy(true)
-    void window.yiben.cloud
-      .cacheClearSeries(seriesId)
-      .then(() => refresh())
-      .finally(() => setBusy(false))
+    setCacheError('')
+    setCacheMessage('')
+    try {
+      const result = confirmClear.kind === 'all'
+        ? await window.yudu.cloud.cacheClearAll()
+        : await window.yudu.cloud.cacheClearSeries(confirmClear.series.seriesId)
+      await refresh()
+      setCacheMessage(`已清理 ${fmtBytes(result.bytes)} 云端缓存，封面与阅读进度保留。`)
+    } catch (error) {
+      setCacheError(errorMessage(error))
+      throw error
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
     <Card>
-      <CardHeader title="云端缓存" />
+      <CardHeader title={<span ref={cacheFocusRef} tabIndex={-1} data-cache-focus-target className="rounded focus-visible:outline-2 focus-visible:outline-ring">云端缓存</span>} />
       <CardBody>
+        {cacheError && <p className="text-xs text-destructive">{cacheError}</p>}
         {/* 概览 + 上限 */}
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -336,7 +564,7 @@ function CloudCacheSection() {
                 ) : null}
               </p>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                读过的漫画保存在本地，断网可看；超限自动清理最久未看的
+                超限自动清理未保护的缓存；整系列离线预取会开启保护，手动清理会取消下载并解除保护
               </p>
             </div>
           </div>
@@ -383,7 +611,7 @@ function CloudCacheSection() {
               variant="outline"
               className="text-destructive hover:text-destructive"
               disabled={busy || !stats || stats.totalBytes <= 0}
-              onClick={clearAll}
+              onClick={() => stats && setConfirmClear({ kind: 'all', bytes: stats.totalBytes, files: stats.files })}
             >
               <Trash2 className="size-3.5" />
               清除全部
@@ -399,6 +627,7 @@ function CloudCacheSection() {
               {list.map((s) => (
                 <div
                   key={s.seriesId}
+                  data-cache-series-id={s.seriesId}
                   className="flex items-center gap-3 border-b border-border/60 px-3 py-2.5 last:border-0"
                 >
                   <span className="min-w-0 flex-1 truncate text-sm">{s.title}</span>
@@ -410,7 +639,8 @@ function CloudCacheSection() {
                     variant="ghost"
                     className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
                     disabled={busy}
-                    onClick={() => clearOne(s.seriesId)}
+                    aria-label={`清除「${s.title}」的缓存`}
+                    onClick={() => setConfirmClear({ kind: 'series', series: s })}
                   >
                     <Trash2 className="size-3" />
                     清除
@@ -420,30 +650,67 @@ function CloudCacheSection() {
             </div>
           )}
         </div>
+        {cacheMessage && <p role="status" className="text-xs text-muted-foreground">{cacheMessage}</p>}
       </CardBody>
+      {confirmClear && (
+        <ConfirmDialog
+          title={confirmClear.kind === 'all' ? '清除全部云端缓存' : '清除系列缓存'}
+          tone="danger"
+          confirmLabel={confirmClear.kind === 'all' ? '确认清除全部缓存' : '确认清除此系列缓存'}
+          pendingLabel="正在清理缓存…"
+          description={confirmClear.kind === 'all'
+            ? '将删除全部云端书库的本地阅读缓存。之后阅读这些内容需要联网重新下载。'
+            : <>将删除「{confirmClear.series.title}」的本地阅读缓存，之后阅读需要联网重新下载。</>}
+          details={<div className="space-y-3">
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 rounded-lg bg-muted/60 p-3 text-xs">
+              <dt className="text-muted-foreground">清理范围</dt>
+              <dd className="min-w-0 font-medium">{confirmClear.kind === 'all' ? '全部云端书库' : confirmClear.series.title}</dd>
+              <dt className="text-muted-foreground">当前占用</dt>
+              <dd className="tabular-nums">{fmtBytes(confirmClear.kind === 'all' ? confirmClear.bytes : confirmClear.series.bytes)}</dd>
+              {confirmClear.kind === 'all' && <>
+                <dt className="text-muted-foreground">缓存文件</dt>
+                <dd>{confirmClear.files} 个</dd>
+              </>}
+            </dl>
+            <p className="text-xs text-muted-foreground">清理会取消相关下载并解除离线保护。封面、阅读进度、书签和云端原文件保留。</p>
+          </div>}
+          onClose={() => setConfirmClear(null)}
+          onConfirm={clearConfirmed}
+          fallbackFocus={() => cacheFocusRef.current}
+        />
+      )}
     </Card>
   )
 }
 
-/** 应用更新：检查 -> 下载（进度）-> 立即重启。发布渠道 GitHub Releases（仅打包版） */
+/** 应用更新：检查 -> 下载（进度）-> 立即重启。主渠道设置里可选，检查失败自动切备用 */
 function UpdateSection() {
   const u = useUpdateStore()
   const [autoCheck, setAutoCheck] = useState(true)
+  const [channel, setChannel] = useState<'r2' | 'github'>('r2')
 
   useEffect(() => {
-    void window.yiben.config.get('autoCheckUpdate').then((v) => setAutoCheck(v !== false))
+    void window.yudu.config.get('autoCheckUpdate').then((v) => setAutoCheck(v !== false))
+    void window.yudu.config
+      .get('updateChannel')
+      .then((v) => setChannel(v === 'github' ? 'github' : 'r2'))
+      .catch(() => {})
   }, [])
 
   // 仅 available 状态下 version 才有效——latest 时后端也回传版本号(=当前版)，不能据此显示下载按钮
   const canDownload = u.status === 'available' && !u.ready
+  const served = u.channel ? `，经${u.channel === 'github' ? 'GitHub' : 'R2'}渠道检查` : ''
   const msg = (() => {
     if (u.ready) return `新版本 v${u.ready} 已下载完成，点击「立即重启」生效`
     if (u.downloading) return '正在下载更新…（完成后可点击「立即重启」）'
-    if (u.error) return u.status === 'error' ? `检查失败：${u.error}（请检查网络后重试）` : `下载失败：${u.error}`
-    if (u.status === 'dev') return '开发模式不检查更新（打包版自动检查 GitHub Releases）'
+    if (u.error)
+      return u.status === 'error'
+        ? `两个渠道都检查失败：${u.error}（请检查网络后重试）`
+        : `下载失败：${u.error}`
+    if (u.status === 'dev') return '开发模式不检查更新（打包版支持在线升级）'
     if (u.status === 'available')
-      return `发现新版本 v${u.version}，点击「下载更新」获取（全量安装包）`
-    if (u.status === 'latest') return `已是最新版本（v${u.current}）`
+      return `发现新版本 v${u.version}，点击「下载更新」获取（全量安装包${served}）`
+    if (u.status === 'latest') return `已是最新版本（v${u.current}${served}）`
     return ''
   })()
 
@@ -458,7 +725,7 @@ function UpdateSection() {
             </div>
             <div>
               <p className="text-sm font-medium">
-                一本 Yiben
+                雨读 Yudu
                 <span className="ml-2 text-xs text-muted-foreground">v{u.current || '…'}</span>
                 {canDownload && (
                   <span className="ml-2 rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
@@ -472,7 +739,8 @@ function UpdateSection() {
                 )}
               </p>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                发布渠道 GitHub Releases，仅打包版支持在线升级
+                主渠道{channel === 'r2' ? ' yudu-media.yeyushi.com（Cloudflare R2）' : ' GitHub Releases'}
+                ，失败自动切备用，仅打包版支持在线升级
               </p>
             </div>
           </div>
@@ -483,12 +751,20 @@ function UpdateSection() {
               disabled={u.checking || u.downloading}
               onClick={() => void u.check()}
             >
-              {u.checking ? <Loader2 className="animate-spin" /> : <RefreshCw className="size-3.5" />}
+              {u.checking ? (
+                <Loader2 className="animate-spin" />
+              ) : (
+                <RefreshCw className="size-3.5" />
+              )}
               检查更新
             </Button>
             {canDownload && (
               <Button size="sm" disabled={u.downloading} onClick={() => void u.download()}>
-                {u.downloading ? <Loader2 className="animate-spin" /> : <Download className="size-3.5" />}
+                {u.downloading ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Download className="size-3.5" />
+                )}
                 下载更新 v{u.version}
               </Button>
             )}
@@ -532,9 +808,42 @@ function UpdateSection() {
           checked={autoCheck}
           onChange={(v) => {
             setAutoCheck(v)
-            void window.yiben.config.set('autoCheckUpdate', v).catch(() => {})
+            void window.yudu.config.set('autoCheckUpdate', v).catch(() => {})
           }}
         />
+
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">更新渠道</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              主渠道检查失败时自动改用备用渠道重试，下载跟随检查成功的渠道
+            </p>
+          </div>
+          <div className="flex shrink-0 rounded-full border border-border/60 p-0.5">
+            {(['r2', 'github'] as const).map((ch) => (
+              <button
+                key={ch}
+                onClick={() => {
+                  setChannel(ch)
+                  void window.yudu.config.set('updateChannel', ch).catch(() => {})
+                }}
+                title={
+                  ch === 'r2'
+                    ? 'yudu-media.yeyushi.com（Cloudflare R2）'
+                    : 'github.com/mkktop/Yudu Releases'
+                }
+                className={cn(
+                  'rounded-full px-3 py-1 text-xs transition-colors',
+                  channel === ch
+                    ? 'bg-primary font-medium text-primary-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {ch === 'r2' ? 'R2' : 'GitHub'}
+              </button>
+            ))}
+          </div>
+        </div>
       </CardBody>
     </Card>
   )
@@ -576,7 +885,7 @@ function DiagnoseSection() {
   const run = (): Promise<void> => {
     setRunning(true)
     setError('')
-    return window.yiben.diagnose
+    return window.yudu.diagnose
       .run()
       .then(setReport)
       .catch((e) => setError(errorMessage(e)))
@@ -588,7 +897,7 @@ function DiagnoseSection() {
     setActionError('')
     setBusySeries(seriesId)
     try {
-      await window.yiben.series.rescan(seriesId)
+      await window.yudu.series.rescan(seriesId)
       await run()
       bump()
     } catch (e) {
@@ -602,7 +911,7 @@ function DiagnoseSection() {
   const removeSeries = async (id: number): Promise<void> => {
     setActionError('')
     try {
-      await window.yiben.series.remove(id)
+      await window.yudu.series.remove(id)
       if (report) {
         setReport({
           ...report,
@@ -640,7 +949,13 @@ function DiagnoseSection() {
               </p>
             </div>
           </div>
-          <Button size="sm" variant="outline" className="shrink-0" disabled={running} onClick={() => void run()}>
+          <Button
+            size="sm"
+            variant="outline"
+            className="shrink-0"
+            disabled={running}
+            onClick={() => void run()}
+          >
             {running ? <Loader2 className="animate-spin" /> : <HeartPulse />}
             {running ? '体检中…' : '开始体检'}
           </Button>
@@ -690,7 +1005,9 @@ function DiagnoseSection() {
             </DiagnoseList>
 
             <DiagnoseList label="空章节（页数为 0）" count={report.emptyChapters.length}>
-              {report.emptyChapters.length === 0 && <p className="text-xs text-muted-foreground">没有空章节</p>}
+              {report.emptyChapters.length === 0 && (
+                <p className="text-xs text-muted-foreground">没有空章节</p>
+              )}
               {report.emptyChapters.map((c) => (
                 <p key={c.id} className="truncate py-0.5 text-xs">
                   {c.seriesTitle} · {c.title}
@@ -728,7 +1045,10 @@ function DiagnoseSection() {
               ))}
             </DiagnoseList>
 
-            <DiagnoseList label="孤儿页缩略图（章节已删除）" count={report.orphanThumbBytes > 0 ? 1 : 0}>
+            <DiagnoseList
+              label="孤儿页缩略图（章节已删除）"
+              count={report.orphanThumbBytes > 0 ? 1 : 0}
+            >
               <p className="py-0.5 text-xs text-muted-foreground">
                 占用 {fmtBytes(report.orphanThumbBytes)}。体检只做统计，不会自动删除；可在文件管理器
                 中清理 thumbs/pages 下的同名目录，或等下次全库重扫后自然对齐。
@@ -742,68 +1062,31 @@ function DiagnoseSection() {
 }
 
 export function SettingsPage() {
-  const { theme, setTheme } = useThemeStore()
-
+  const sections = [
+    { id: 'appearance', label: '外观', content: <ThemeSettings /> },
+    { id: 'reading', label: '阅读', content: <ReaderDefaultsSection /> },
+    { id: 'general', label: '通用', content: <GeneralSection /> },
+    { id: 'cache', label: '缓存', content: <CloudCacheSection /> },
+    { id: 'data', label: '进度', content: <DataSection /> },
+    { id: 'backup', label: '备份', content: <BackupSection /> },
+    { id: 'diagnose', label: '诊断', content: <DiagnoseSection /> },
+    { id: 'update', label: '更新', content: <UpdateSection /> }
+  ]
   return (
     <div className="mx-auto max-w-[1400px] space-y-6 p-8">
       <header>
         <h1 className="font-serif text-2xl font-semibold">设置</h1>
+        <p className="mt-1 text-sm text-muted-foreground">按你的阅读习惯，布置自己的书房</p>
       </header>
-
-      <Card>
-        <CardHeader title="外观" />
-        <CardBody className="space-y-6">
-          <div>
-            <p className="mb-3 text-sm font-medium">主题</p>
-            <div className="grid grid-cols-2 gap-4">
-              {(
-                [
-                  {
-                    key: 'paper',
-                    label: '纸墨书斋 · 浅色',
-                    desc: '暖纸 · 朱砂 · 书房雅气',
-                    // 预览色条与 index.css 令牌对应：朱砂 / 暖纸 / 墨字
-                    swatches: ['oklch(0.55 0.19 32)', 'oklch(0.985 0.002 85)', 'oklch(0.245 0.008 60)']
-                  },
-                  {
-                    key: 'comic',
-                    label: '现代漫画 · 深色',
-                    desc: '油墨 · 信号黄 · 网点纹理',
-                    // 预览色条：信号黄 / 墨蓝黑 / 浅字
-                    swatches: ['oklch(0.86 0.15 95)', 'oklch(0.17 0.025 265)', 'oklch(0.95 0.012 95)']
-                  }
-                ] as const
-              ).map((t) => (
-                <button
-                  key={t.key}
-                  onClick={() => setTheme(t.key)}
-                  className={cn(
-                    'rounded-xl border-2 p-4 text-left transition-colors',
-                    theme === t.key
-                      ? 'border-primary bg-primary/5'
-                      : 'border-border hover:border-ring/50'
-                  )}
-                >
-                  <div className="mb-3 flex h-8 overflow-hidden rounded-lg border">
-                    {t.swatches.map((c) => (
-                      <span key={c} className="h-full flex-1" style={{ background: c }} />
-                    ))}
-                  </div>
-                  <span className="text-sm font-medium">{t.label}</span>
-                  <p className="mt-0.5 text-xs text-muted-foreground">{t.desc}</p>
-                </button>
-              ))}
-            </div>
-          </div>
-        </CardBody>
-      </Card>
-
-      <ReaderDefaultsSection />
-      <GeneralSection />
-      <CloudCacheSection />
-      <DataSection />
-      <DiagnoseSection />
-      <UpdateSection />
+      <nav aria-label="设置分区" className="sticky top-0 z-10 flex flex-wrap gap-1 rounded-xl border border-border/60 bg-background/95 p-1.5 shadow-xs backdrop-blur-md">
+        {sections.map((section) => (
+          <button type="button" key={section.id} onClick={() => document.getElementById(`settings-${section.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            className="rounded-lg px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">
+            {section.label}
+          </button>
+        ))}
+      </nav>
+      {sections.map((section) => <div key={section.id} id={`settings-${section.id}`} className="scroll-mt-16">{section.content}</div>)}
     </div>
   )
 }

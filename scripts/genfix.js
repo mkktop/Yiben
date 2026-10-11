@@ -23,7 +23,7 @@ function svg(text, hue) {
     <circle cx="650" cy="220" r="140" fill="hsl(${hue},50%,45%)" opacity="0.5"/>
     <circle cx="180" cy="980" r="200" fill="hsl(${(hue+80)%360},50%,40%)" opacity="0.35"/>
     <text x="60" y="140" font-size="52" fill="white" font-family="sans-serif" font-weight="bold">${text}</text>
-    <text x="62" y="200" font-size="30" fill="white" opacity="0.7" font-family="sans-serif">一本 Yiben</text>
+    <text x="62" y="200" font-size="30" fill="white" opacity="0.7" font-family="sans-serif">雨读 Yudu</text>
   </svg>`);
 }
 

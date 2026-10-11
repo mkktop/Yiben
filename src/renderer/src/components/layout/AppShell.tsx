@@ -1,12 +1,12 @@
 import { useEffect, useRef } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { BarChart3, Cloud, Home, Library, Moon, Search, Settings, Sun, X } from 'lucide-react'
-import { useThemeStore } from '@/stores/theme'
+import { BarChart3, Cloud, Home, Library, Search, Settings, X } from 'lucide-react'
 import { useDataStore } from '@/stores/data'
 import { useUpdateStore } from '@/stores/update'
-import { Button } from '@/components/ui/button'
+import { ThemePicker } from '@/components/ThemePicker'
 import { Input } from '@/components/ui/input'
 import { WindowControls } from '@/components/layout/WindowControls'
+import { LogoMark } from '@/components/LogoMark'
 import { cn } from '@/lib/utils'
 
 const navItems = [
@@ -18,7 +18,6 @@ const navItems = [
 ]
 
 export function AppShell() {
-  const { theme, toggle } = useThemeStore()
   const { query, setQuery } = useDataStore()
   const navigate = useNavigate()
   const location = useLocation()
@@ -44,10 +43,8 @@ export function AppShell() {
     <div className="flex h-screen overflow-hidden">
       <aside className="flex w-56 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
         <div className="flex h-14 items-center gap-2.5 px-5 [-webkit-app-region:drag]">
-          <div className="grid size-8 place-items-center rounded-lg bg-gradient-to-br from-primary to-primary/85 font-serif text-lg font-bold text-primary-foreground shadow-sm transition-transform duration-150 hover:scale-105">
-            一
-          </div>
-          <span className="font-serif text-lg font-semibold tracking-wide">一本</span>
+          <LogoMark className="size-8 rounded-lg shadow-sm transition-transform duration-150 hover:scale-105" />
+          <span className="font-serif text-lg font-semibold tracking-wide">雨读</span>
         </div>
 
         <nav className="flex-1 space-y-1 px-3 py-3">
@@ -133,15 +130,7 @@ export function AppShell() {
           </div>
           <div className="flex-1" />
           <div className="flex h-full items-center gap-1.5">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={toggle}
-              title="切换主题"
-              className="mr-1 rounded-full text-muted-foreground hover:text-foreground"
-            >
-              {theme === 'comic' ? <Sun className="size-5" /> : <Moon className="size-5" />}
-            </Button>
+            <ThemePicker />
             <WindowControls />
           </div>
         </header>

@@ -8,7 +8,7 @@ import { EpubDriver } from './epub'
 
 let dir = ''
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), 'yiben-epub-'))
+  dir = mkdtempSync(join(tmpdir(), 'yudu-epub-'))
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 

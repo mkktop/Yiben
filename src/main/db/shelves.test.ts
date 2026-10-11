@@ -28,7 +28,7 @@ import {
 let dir = ''
 
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), 'yiben-shelves-'))
+  dir = mkdtempSync(join(tmpdir(), 'yudu-shelves-'))
   mocks.userData = dir
   openDb()
   addLibrary('书架测试库', 'D:/shelves')

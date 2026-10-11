@@ -17,6 +17,8 @@ interface UpdateStore {
   percent: number
   /** 已下载待安装的版本（空 = 没有） */
   ready: string
+  /** 最近一次成功检查实际服务的渠道（'' = 还没查过；主渠道失败自动切备用时反映真实来源） */
+  channel: '' | 'r2' | 'github'
   /** 读当前版本 + 恢复待安装状态 + 注册进度/就绪监听（幂等） */
   init: () => Promise<void>
   check: () => Promise<void>
@@ -36,26 +38,28 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
   downloading: false,
   percent: 0,
   ready: '',
+  channel: '',
 
   init: async () => {
     if (inited) return
     inited = true
-    const [v, s] = await Promise.all([window.yiben.updater.appVersion(), window.yiben.updater.state()])
-    set({ current: v, ready: s.ready, downloading: s.downloading })
-    window.yiben.updater.onProgress((percent) => set({ percent }))
-    window.yiben.updater.onReady((version) => set({ ready: version, downloading: false }))
+    const [v, s] = await Promise.all([window.yudu.updater.appVersion(), window.yudu.updater.state()])
+    set({ current: v, ready: s.ready, downloading: s.downloading, channel: s.channel })
+    window.yudu.updater.onProgress((percent) => set({ percent }))
+    window.yudu.updater.onReady((version) => set({ ready: version, downloading: false }))
   },
 
   check: async () => {
     set({ checking: true, error: '', notes: '', version: '' })
     try {
-      const r = await window.yiben.updater.check()
+      const r = await window.yudu.updater.check()
       set({
         status: r.status,
         current: r.current,
         version: r.version ?? '',
         notes: r.notes ?? '',
-        error: r.error ?? ''
+        error: r.error ?? '',
+        channel: r.channel ?? ''
       })
     } catch (e) {
       set({ status: 'error', error: String(e) })
@@ -67,7 +71,7 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
   download: async () => {
     set({ downloading: true, percent: 0, error: '' })
     try {
-      const r = await window.yiben.updater.download()
+      const r = await window.yudu.updater.download()
       if (!r.ok) set({ downloading: false, error: r.error ?? '下载失败' })
       // 成功时 onReady 事件把 downloading 置 false 并写入 ready
     } catch (e) {
@@ -77,6 +81,6 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
   },
 
   install: () => {
-    if (get().ready) void window.yiben.updater.install()
+    if (get().ready) void window.yudu.updater.install()
   }
 }))

@@ -11,13 +11,13 @@ export function WindowControls({ className }: { className?: string }): ReactNode
 
   useEffect(() => {
     let mounted = true
-    void window.yiben.appWindow
+    void window.yudu.appWindow
       .isMaximized()
       .then((v) => {
         if (mounted) setMaximized(v)
       })
       .catch(() => {})
-    const off = window.yiben.appWindow.onMaximizeChange((v) => setMaximized(v))
+    const off = window.yudu.appWindow.onMaximizeChange((v) => setMaximized(v))
     return (): void => {
       mounted = false
       off()
@@ -35,7 +35,7 @@ export function WindowControls({ className }: { className?: string }): ReactNode
         title="最小化"
         className={btn}
         onClick={() => {
-          void window.yiben.appWindow.minimize()
+          void window.yudu.appWindow.minimize()
         }}
       >
         <Minus className="size-4" />
@@ -44,7 +44,7 @@ export function WindowControls({ className }: { className?: string }): ReactNode
         title={maximized ? '还原' : '最大化'}
         className={btn}
         onClick={() => {
-          void window.yiben.appWindow.toggleMaximize()
+          void window.yudu.appWindow.toggleMaximize()
         }}
       >
         {maximized ? <Copy className="size-3.5" /> : <Square className="size-3.5" />}
@@ -53,7 +53,7 @@ export function WindowControls({ className }: { className?: string }): ReactNode
         title="关闭"
         className={cn(btn, 'hover:bg-destructive hover:text-white')}
         onClick={() => {
-          window.yiben.appWindow.close().catch(() => {})
+          window.yudu.appWindow.close().catch(() => {})
         }}
       >
         <X className="size-4" />

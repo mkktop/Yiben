@@ -39,7 +39,7 @@ async function open(path: string, kind: DriverKind): Promise<ArchiveDriver> {
 }
 
 /**
- * 驱动实例缓存（LRU）：yiben:// 协议的每次请求相互独立，
+ * 驱动实例缓存（LRU）：yudu:// 协议的每次请求相互独立，
  * 靠这里避免重复打开压缩包。超限时关闭最久未用的驱动。
  * RAR/7Z 单实例要整包读内存（RAR 尤甚），设更小的同类上限控制内存峰值。
  */

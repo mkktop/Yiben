@@ -10,6 +10,7 @@ vi.mock('electron', () => ({ app: { getPath: () => mocks.userData } }))
 
 import {
   addLibrary,
+  chaptersBySeries,
   closeDb,
   continueReading,
   deleteChaptersNotIn,
@@ -28,7 +29,7 @@ import {
 let dir = ''
 
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), 'yiben-db-'))
+  dir = mkdtempSync(join(tmpdir(), 'yudu-db-'))
   mocks.userData = dir
   openDb()
   addLibrary('测试库', 'D:/lib')
@@ -82,6 +83,24 @@ function seedSeries(title: string, names: string[], hidden = false): number {
   if (hidden) setSeriesHidden(seriesId, true)
   return seriesId
 }
+
+describe('系列章节进度详情', () => {
+  it('携带阅读时间供继续入口选择，未读章节仍为空', () => {
+    const series = seedSeries('阅读时间详情', ['时间1', '时间2'])
+    const [first, second] = chapterIds(series)
+    saveProgress(second, 2, false)
+    touch(second, 1250)
+    const chapters = chaptersBySeries(series)
+    expect(chapters.find((chapter) => chapter.id === first)).toMatchObject({
+      read_page: null, completed: null, read_updated_at: null
+    })
+    expect(chapters.find((chapter) => chapter.id === second)).toMatchObject({
+      read_page: 2, completed: 0, read_updated_at: 1250
+    })
+    // 该用例的进度不参与其他首页列表测试。
+    openDb().prepare('DELETE FROM progress WHERE chapter_id = ?').run(second)
+  })
+})
 
 describe('continueReading（每系列取最近未完话）', () => {
   it('取该系列最近更新且未读完的一话；整系列读完/隐藏不出现', () => {

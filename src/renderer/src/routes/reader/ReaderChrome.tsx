@@ -30,7 +30,8 @@ interface NeighborChapter {
 }
 
 export interface ReaderChromeProps {
-  chapterId: number
+  /** 页码指示/跳页的归属话：条漫跨话软切换后是拼接话 id（路由话 id 不变） */
+  positionChapterId: number
   /** fit/rotate/rtl 按钮改动按系列落盘需要 */
   seriesId: number
   seriesTitle: string
@@ -73,7 +74,7 @@ const MODES: Array<{ key: ReaderMode; label: string; icon: LucideIcon }> = [
  * 页码/进度条/缩略图条由下面几个自订阅小组件各自更新。
  */
 export const ReaderChrome = memo(function ReaderChrome({
-  chapterId,
+  positionChapterId,
   seriesId,
   seriesTitle,
   chapterTitle,
@@ -126,7 +127,7 @@ export const ReaderChrome = memo(function ReaderChrome({
         <button
           onClick={onPrevChapter}
           disabled={!neighbors?.prev}
-          className="grid size-8 place-items-center rounded-full text-foreground/80 transition-colors hover:bg-accent hover:text-foreground disabled:opacity-25"
+          className="grid size-8 place-items-center rounded-full text-foreground/80 transition-colors [-webkit-app-region:no-drag] hover:bg-accent hover:text-foreground disabled:opacity-25"
           title={neighbors?.prev ? `上一话：${neighbors.prev.title}` : '没有上一话'}
         >
           <ChevronLeft className="size-4" />
@@ -134,7 +135,7 @@ export const ReaderChrome = memo(function ReaderChrome({
         <button
           onClick={onNextChapter}
           disabled={!neighbors?.next}
-          className="grid size-8 place-items-center rounded-full text-foreground/80 transition-colors hover:bg-accent hover:text-foreground disabled:opacity-25"
+          className="grid size-8 place-items-center rounded-full text-foreground/80 transition-colors [-webkit-app-region:no-drag] hover:bg-accent hover:text-foreground disabled:opacity-25"
           title={neighbors?.next ? `下一话：${neighbors.next.title}` : '没有下一话'}
         >
           <ChevronRight className="size-4" />
@@ -146,7 +147,7 @@ export const ReaderChrome = memo(function ReaderChrome({
             <span className="text-muted-foreground">{chapterTitle}</span>
           </p>
         </div>
-        <PageJumpChip chapterId={chapterId} onJump={onJump} />
+        <PageJumpChip chapterId={positionChapterId} onJump={onJump} continuous={!canThumbnail} />
         <div className="mx-1 h-5 w-px bg-border/60" />
         <IconBtn
           title={`书签：当前页${isBookmarked ? '已加' : '未加'}（B）`}
@@ -162,12 +163,14 @@ export const ReaderChrome = memo(function ReaderChrome({
         >
           <BookmarksGlyph />
         </IconBtn>
-        <IconBtn
-          title={`方向：${rtl ? '日漫（从右往左）' : '西漫（从左往右）'}（D 切换）`}
-          onClick={() => patchReaderPrefs(seriesId, { rtl: !rtl })}
-        >
-          <ArrowRightToLine className={cn(rtl && 'scale-x-[-1]')} />
-        </IconBtn>
+        {canThumbnail && (
+          <IconBtn
+            title={`方向：${rtl ? '日漫（从右往左）' : '西漫（从左往右）'}（D 切换）`}
+            onClick={() => patchReaderPrefs(seriesId, { rtl: !rtl })}
+          >
+            <ArrowRightToLine className={cn(rtl && 'scale-x-[-1]')} />
+          </IconBtn>
+        )}
         {mode === 'double' && canThumbnail && (
           <IconBtn
             title={`跨页配对（C）：${spreadOffset === 1 ? '第 1 页单独' : '从第 1 页起两两配对'}`}
@@ -177,24 +180,28 @@ export const ReaderChrome = memo(function ReaderChrome({
             <SpreadGlyph />
           </IconBtn>
         )}
-        <IconBtn
-          title={`适配：${fit === 'width' ? '适宽' : fit === 'height' ? '适高' : '原始'}（S 切换）`}
-          onClick={() =>
-            patchReaderPrefs(seriesId, {
-              fit: fit === 'width' ? 'height' : fit === 'height' ? 'original' : 'width'
-            })
-          }
-        >
-          <span className="text-[11px] font-semibold">
-            {fit === 'width' ? '宽' : fit === 'height' ? '高' : '原'}
-          </span>
-        </IconBtn>
-        <IconBtn
-          title="旋转（R）"
-          onClick={() => patchReaderPrefs(seriesId, { rotate: ((rotate + 90) % 360) as number })}
-        >
-          <RotateCw />
-        </IconBtn>
+        {canThumbnail && (
+          <IconBtn
+            title={`适配：${fit === 'width' ? '适宽' : fit === 'height' ? '适高' : '原始'}（S 切换）`}
+            onClick={() =>
+              patchReaderPrefs(seriesId, {
+                fit: fit === 'width' ? 'height' : fit === 'height' ? 'original' : 'width'
+              })
+            }
+          >
+            <span className="text-[11px] font-semibold">
+              {fit === 'width' ? '宽' : fit === 'height' ? '高' : '原'}
+            </span>
+          </IconBtn>
+        )}
+        {canThumbnail && (
+          <IconBtn
+            title="旋转（R）"
+            onClick={() => patchReaderPrefs(seriesId, { rotate: ((rotate + 90) % 360) as number })}
+          >
+            <RotateCw />
+          </IconBtn>
+        )}
         {canThumbnail && (
           <IconBtn title="缩略图（T）" active={showThumbs} onClick={toggleThumbs}>
             <Sheet />
@@ -210,34 +217,41 @@ export const ReaderChrome = memo(function ReaderChrome({
       </div>
 
       {/* 模式切换（左下悬浮毛玻璃） */}
-      <div
-        className={cn(
-          'absolute bottom-3 left-3 z-20 flex gap-1 rounded-xl border border-border/50 bg-background/80 p-1 shadow-lg backdrop-blur-md transition-opacity duration-300',
-          immersive ? 'pointer-events-none opacity-0' : 'opacity-100'
-        )}
-      >
-        {MODES.map((m) => (
-          <button
-            key={m.key}
-            onClick={() => onModeChange(m.key)}
-            title={`${m.label}模式（M 循环切换）`}
-            className={cn(
-              'flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs transition-colors',
-              mode === m.key
-                ? 'bg-primary font-medium text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-            )}
-          >
-            <m.icon className="size-3.5" />
-            {m.label}
-          </button>
-        ))}
-      </div>
+      {canThumbnail ? (
+        <div
+          className={cn(
+            'absolute bottom-3 left-3 z-20 flex gap-1 rounded-xl border border-border/50 bg-background/80 p-1 shadow-lg backdrop-blur-md transition-opacity duration-300',
+            immersive ? 'pointer-events-none opacity-0' : 'opacity-100'
+          )}
+        >
+          {MODES.map((m) => (
+            <button
+              key={m.key}
+              onClick={() => onModeChange(m.key)}
+              title={`${m.label}模式（M 循环切换）`}
+              aria-pressed={mode === m.key}
+              className={cn(
+                'flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs transition-colors',
+                mode === m.key
+                  ? 'bg-primary font-medium text-primary-foreground shadow-sm'
+                  : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+              )}
+            >
+              <m.icon className="size-3.5" />
+              {m.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className={cn('pointer-events-none absolute bottom-3 left-3 z-20 rounded-xl border border-white/10 bg-black/60 px-3 py-2 text-xs text-white/70 transition-opacity', immersive && 'opacity-0')}>
+          PDF · 连续阅读
+        </div>
+      )}
 
       {/* 底部进度条 + 缩略图条（均自订阅 page/pageCount）；末屏不插卡片，翻页/点击直接跨话 */}
       <ProgressStrip />
       {showThumbs && canThumbnail && (
-        <ThumbStrip chapterId={chapterId} bookmarks={bookmarks} onJump={onJump} />
+        <ThumbStrip chapterId={positionChapterId} bookmarks={bookmarks} onJump={onJump} />
       )}
 
       {/* 书签列表面板 */}
@@ -280,7 +294,7 @@ export const ReaderChrome = memo(function ReaderChrome({
               <p className="text-sm font-medium">
                 翻页方向：{hint.rtl ? '从右往左（日漫）' : '从左往右（西漫）'}
               </p>
-              <p className="text-xs text-muted-foreground">点击区域与翻页键都跟随这个方向，D 键可切换</p>
+              <p className="text-xs text-muted-foreground">点击两侧区域跟随阅读方向，D 键可切换</p>
             </div>
           ) : (
             <div className="hint-pop pointer-events-auto rounded-xl border border-border/50 bg-background/80 px-5 py-2.5 text-sm text-foreground shadow-lg backdrop-blur-md">
@@ -299,10 +313,12 @@ export const ReaderChrome = memo(function ReaderChrome({
 /** 页码指示/跳页（自订阅：跨页时只更新这里，不牵动整个顶栏） */
 function PageJumpChip({
   chapterId,
-  onJump
+  onJump,
+  continuous
 }: {
   chapterId: number
   onJump: (chapterId: number, page0: number) => void
+  continuous: boolean
 }) {
   const mode = useReaderStore((s) => s.mode)
   const page = useReaderStore((s) => s.page)
@@ -315,7 +331,7 @@ function PageJumpChip({
   const lo = Math.min(...spread) + 1
   const hi = Math.max(...spread) + 1
   const display =
-    mode === 'webtoon' || lo === hi ? `${page + 1} / ${pageCount}` : `${lo}-${hi} / ${pageCount}`
+    continuous || mode !== 'double' || lo === hi ? `${page + 1} / ${pageCount}` : `${lo}-${hi} / ${pageCount}`
   return <PageJump display={display} page={page} onJump={(page0) => onJump(chapterId, page0)} />
 }
 

@@ -1,22 +1,43 @@
-# 一本 Yiben — 功能候选规格与交接话术
+# 雨读 Yudu — 功能候选规格与交接话术
 
 > 用途：本文档的每个功能都附带一段**可直接复制给另一个 AI 执行的完整提示词**。  
 > 提示词已写成自包含形式（含项目背景、技术栈、代码约定、验收标准），粘贴到 Claude Code / Codex / Cursor 等工具即可开工，不需要对方再探索代码库。
 >
-> 生成日期：2026-09-11 ｜ 基于 v0.1.1 代码
+> 生成日期：2026-09-11 ｜ 基于 v0.1.1 代码 ｜ 上下文块 2026-09-25 与根目录 `AGENTS.md` 对齐（两处同步维护，以 AGENTS.md 为准）
 
 ---
+
+## 当前实现状态（2026-10-10）
+
+下方规格保留了早期实现前的上下文，交接任务前先以当前源码和根目录 `AGENTS.md` 为准。
+本轮审查与后续优先级见 [项目审查报告](PROJECT_AUDIT_2026-10-10.md)。
+
+| 编号 | 当前状态 | 后续工作 |
+| --- | --- | --- |
+| A1 | 已实现阅读页数统计、热力图与活跃时长 | 失焦、后台或一分钟无操作暂停 |
+| A2 | 已实现文件关联、单实例与冷启动领取 | 冷启动/热启动真实 Electron 回归已通过 |
+| A3 | 已实现虚拟书架、自定义标签及筛选 | 无需重复开发 |
+| A4 | 已实现库体检 | 目前依赖扫描结果，尚非逐包完整校验 |
+| B1 | 已实现 WebDAV / NAS | HTTP/HTTPS + Basic + PROPFIND，支持 Range 回退与离线；真实 NAS 兼容性仍需用户环境验收 |
+| B2 | 已实现条漫跨话连续拼接与旧页图片回收 | 跨话进度、全览跳页真实 Electron 回归已通过 |
+| B3 / B4 | 已实现 AniList 候选预览确认、图像增强 | 不自动覆盖元数据；增强只改显示副本，巨图与多帧保留原图 |
+| C1 / C2 | 已实现亮度、暖色及时段、虚拟全览网格 | G 全览、E 增强；偏好按系列与全局默认记忆 |
+| C3 | 已实现 SQLite 自动快照与恢复 | WAL 一致性备份、保留数量、恢复校验与安全快照；不复制漫画文件 |
+| C4 / C5 | 已实现 ComicInfo 回写与可解除的逻辑合并 | ZIP 副本逐页验证、其他单文件写 sidecar；不自动删重复章节或搬动原文件 |
+| D1 | 已接入 115，原“不建议接第二网盘”的状态已过时 | 后续重点是两家网盘的一致性与故障恢复 |
+| D2 / D3 | 未实现 OCR 翻译、多窗口阅读 | 暂不作为优先项 |
 
 
 ## 0. 通用上下文块（所有提示词都建议前置）
 
-如果目标 AI 已在本项目工作区中（能读到源码），可省略下面这段；否则请把这段放在每条提示词前面：
+如果目标 AI 已在本项目工作区中（能读到源码），可省略下面这段（它工作区里的 `AGENTS.md` 内容相同）；否则请把这段放在每条提示词前面：
 
 ```
-项目：一本 Yiben — 本地 + 天翼云盘漫画阅读器，代码在 D:\work\Yiben。
+项目：雨读 Yudu — 本地 + 天翼云盘 / 115 网盘漫画阅读器，代码在 D:\work\Yiben。
 技术栈：Electron 44 + React 18 + TypeScript + Vite（electron-vite）+ Tailwind v4 + zustand
         + react-router-dom（HashRouter）+ better-sqlite3 + sharp。包管理器 pnpm。
-目录：src/main（主进程）、src/preload（contextBridge）、src/renderer/src（React）、src/shared（共享类型）。
+目录：src/main（主进程，含 archives/cloud189/cloud115/cloud/scanner/db）、
+      src/preload（contextBridge）、src/renderer/src（React）、src/shared（共享类型）。
 命令：pnpm dev（开发）、pnpm typecheck（主进程+渲染进程类型检查，必须过）、pnpm test（vitest，必须过）、pnpm build。
 代码约定（务必遵守）：
  1. 注释与 UI 文案一律中文；代码标识符用英文。
@@ -26,7 +47,7 @@
  4. 主进程新能力一律通过 IPC 暴露，步骤是：
     ① src/main/ipc.ts 的 registerIpc() 里加 ipcMain.handle('模块:动作', ...)
     ② src/preload/index.ts 的 api 对象里加对应方法（带精确 TS 类型）
-    ③ 渲染层用 window.yiben.模块.动作() 调用
+    ③ 渲染层用 window.yudu.模块.动作() 调用
     绝不新增 ipcRenderer.sendSync，绝不在渲染层直接 require Node 模块。
  5. 主进程向渲染层推事件用 src/main/events.ts 的 broadcast('事件名', payload)，
     渲染层在 preload 的 events 命名空间下注册 onXxx 并返回取消函数。
@@ -119,7 +140,7 @@
 ```
 【前置通用上下文块见文档第 0 节】
 
-任务：为「一本 Yiben」漫画阅读器增加阅读统计与热力图功能。
+任务：为「雨读 Yudu」漫画阅读器增加阅读统计与热力图功能。
 
 背景：进度保存在 SQLite 的 progress 表（每章一行，只保留最新页码），因此无法回答
 「用户上周读了多少页」。需要新增按天聚合的阅读日志。
@@ -187,7 +208,7 @@
      app.on('second-instance', (_e, argv) => { handleArgv(argv) })
    }
    ```
-2. **取文件路径**：Windows 上第二个实例的启动参数在 `process.argv`，形如 `['...Yiben.exe', 'D:\\a.cbz']`。  
+2. **取文件路径**：Windows 上第二个实例的启动参数在 `process.argv`，形如 `['...Yudu.exe', 'D:\\a.cbz']`。
    冷启动时读 `process.argv`，热启动（已有实例）走 `second-instance` 的 argv。macOS 走 `open-file` 事件。
 3. **建临时书库**：单文件不应污染书架。推荐做法 —— 求该文件所在目录，若目录已在某个书库内就直接查库拿 series/chapter；否则用 `addLibrary()` 建一个名为「临时」的书库并扫描，或更轻量：直接按 `scanOneLocalSeries` 的 `isSingleFile` 模式入库。  
    **注意**：`addLibrary` 有 `ON CONFLICT(path) DO UPDATE`，重复添加同一目录是幂等的，可以放心调用。
@@ -207,7 +228,7 @@
 ```
 【前置通用上下文块见文档第 0 节】
 
-任务：给「一本 Yiben」增加系统文件关联 —— 双击 .cbz/.cbr/.cb7/.cbt/.pdf 直接用阅读器打开。
+任务：给「雨读 Yudu」增加系统文件关联 —— 双击 .cbz/.cbr/.cb7/.cbt/.pdf 直接用阅读器打开。
 
 背景：src/main/index.ts 是 Electron 启动入口，目前没有单实例锁。路由是 HashRouter，
 阅读器路由为 /reader/:chapterId（见 src/renderer/src/App.tsx）。
@@ -301,7 +322,7 @@
 ```
 【前置通用上下文块见文档第 0 节】
 
-任务：给「一本 Yiben」增加「虚拟书架（分组）」与「自定义标签」。
+任务：给「雨读 Yudu」增加「虚拟书架（分组）」与「自定义标签」。
 
 背景：书架筛选目前是硬编码的五档 all/unread/reading/read/recent，见
 src/main/db/index.ts 的 listSeries(opts)，filter 分支是一串 if/else。
@@ -386,7 +407,7 @@ src/main/db/index.ts 的 listSeries(opts)，filter 分支是一串 if/else。
 ```
 【前置通用上下文块见文档第 0 节】
 
-任务：给「一本 Yiben」增加「库体检」诊断功能。
+任务：给「雨读 Yudu」增加「库体检」诊断功能。
 
 背景：src/main/scanner/index.ts 是本地库扫描主流程；src/shared/types.ts 的 Chapter
 已预留 scan_error?: string | null 字段（请用 tryAlter 确认 chapters 表有该列，没有就加）。
@@ -473,7 +494,7 @@ src/main/rescan.ts 导出了 runExclusiveScan(fn)，用于独占型扫描任务�
 ```
 【前置通用上下文块见文档第 0 节】
 
-任务：给「一本 Yiben」增加「库体检」诊断功能。
+任务：给「雨读 Yudu」增加「库体检」诊断功能。
 
 背景：src/main/scanner/index.ts 是本地库扫描主流程；src/shared/types.ts 的 Chapter
 已预留 scan_error?: string | null 字段（请用 tryAlter 确认 chapters 表有该列，没有就加）。
@@ -559,7 +580,7 @@ src/main/rescan.ts 导出了 runExclusiveScan(fn)，用于独占型扫描任务�
 ```
 【前置通用上下文块见文档第 0 节】
 
-任务：给「一本 Yiben」的条漫模式实现「跨话连续滚动」（读完一话自动拼接下一话）。
+任务：给「雨读 Yudu」的条漫模式实现「跨话连续滚动」（读完一话自动拼接下一话）。
 
 背景（请先读）：
 - src/renderer/src/routes/reader/ImageViewer.tsx 的 WebtoonViewer 目前只渲染单话页列表
@@ -626,7 +647,7 @@ src/main/rescan.ts 导出了 runExclusiveScan(fn)，用于独占型扫描任务�
 ```
 【前置通用上下文块见文档第 0 节】
 
-任务：给「一本 Yiben」增加「网络元数据刮削」—— 按标题从公开漫画数据源抓取元数据。
+任务：给「雨读 Yudu」增加「网络元数据刮削」—— 按标题从公开漫画数据源抓取元数据。
 
 重要前提（请在实现前确认并在代码注释里写明）：
 - 请优先使用 Bangumi（bgm.tv）的公开 API。实现前先实际验证接口可用性、鉴权要求与
@@ -689,15 +710,15 @@ src/main/rescan.ts 导出了 runExclusiveScan(fn)，用于独占型扫描任务�
 ```
 【前置通用上下文块见文档第 0 节】
 
-任务：给「一本 Yiben」的阅读器增加图像增强（自动裁边 + 锐化）。
+任务：给「雨读 Yudu」的阅读器增加图像增强（自动裁边 + 锐化）。
 
 背景：项目已依赖 sharp，封面与页缩略图都在用它（src/main/thumbnail.ts、src/main/pageThumb.ts）。
-图片经 yiben:// 自定义协议返回，见 src/main/protocol.ts 的 readChapterPage / readChapterPageDedup。
+图片经 yudu:// 自定义协议返回，见 src/main/protocol.ts 的 readChapterPage / readChapterPageDedup。
 阅读偏好按系列记忆，存在 settings 的 'readerPrefs' 键（见 src/main/ipc.ts 的 reader:prefs:get/set）。
 
 要求：
 1. 自动裁边用 sharp 的 trim({ threshold })；锐化用 sharpen()。
-   在 src/main/protocol.ts 的 page 路由支持查询参数（如 yiben://page/{id}/{idx}?enhance=1），
+   在 src/main/protocol.ts 的 page 路由支持查询参数（如 yudu://page/{id}/{idx}?enhance=1），
    按需处理后返回。
 2. 【性能是关键】绝不能每次翻页都跑 sharp：
    - 处理结果必须落盘缓存（参照 src/main/pageThumb.ts 的做法：临时文件 + rename 原子落盘，
@@ -737,7 +758,7 @@ src/main/rescan.ts 导出了 runExclusiveScan(fn)，用于独占型扫描任务�
 ```
 【前置通用上下文块见文档第 0 节】
 
-任务：给「一本 Yiben」的阅读器加护眼滤镜（色温 / 亮度可调，可跟随系统时间自动开启）。
+任务：给「雨读 Yudu」的阅读器加护眼滤镜（色温 / 亮度可调，可跟随系统时间自动开启）。
 
 要求（本功能应完全在渲染层实现，不要动主进程，不要引新依赖）：
 1. 在 src/renderer/src/routes/reader/ImageViewer.tsx 的图片容器上叠加一个覆盖层：
@@ -765,7 +786,7 @@ src/main/rescan.ts 导出了 runExclusiveScan(fn)，用于独占型扫描任务�
 
 ## 实现要点
 
-- 数据现成：`yiben://page-thumb/{chapterId}/{index}` 已能取到缩略图（`src/main/pageThumb.ts`）。
+- 数据现成：`yudu://page-thumb/{chapterId}/{index}` 已能取到缩略图（`src/main/pageThumb.ts`）。
 - 页数可能未知（云端压缩包 `pageCount=0`），此时按已知值展示并在收到 `chapter:pageCount` 广播后扩展。
 - 用 `@tanstack/react-virtual` 做网格虚拟化，别一次渲染几百个 `<img>`。
 - 当前页高亮 + 自动滚动到视野内；点击跳转调用现有 `setPage`。
@@ -776,10 +797,10 @@ src/main/rescan.ts 导出了 runExclusiveScan(fn)，用于独占型扫描任务�
 ```
 【前置通用上下文块见文档第 0 节】
 
-任务：给「一本 Yiben」阅读器加「缩略图全览网格」面板（快捷键 G 打开）。
+任务：给「雨读 Yudu」阅读器加「缩略图全览网格」面板（快捷键 G 打开）。
 
 背景：
-- 缩略图已可通过 yiben://page-thumb/{chapterId}/{index} 取得（主进程 sharp 生成并落盘缓存，
+- 缩略图已可通过 yudu://page-thumb/{chapterId}/{index} 取得（主进程 sharp 生成并落盘缓存，
   见 src/main/pageThumb.ts 与 src/main/protocol.ts 的 page-thumb 路由），直接用 <img> 加载即可
 - 项目已依赖 @tanstack/react-virtual，书架封面墙 src/renderer/src/components/library/CoverGrid.tsx 是现成范例
 - 翻页状态机在 src/renderer/src/stores/reader.ts，跳转用现有的 setPage
@@ -788,11 +809,11 @@ src/main/rescan.ts 导出了 runExclusiveScan(fn)，用于独占型扫描任务�
 1. 在 src/renderer/src/routes/reader/ 新建 ThumbnailGrid.tsx：全屏面板，网格展示本章所有页缩略图。
 2. 【重要】页数可能未知：云端压缩包要整包下载后才知道页数，此时 pageCount 为 0
    （见 src/shared/types.ts 与 ReaderPage.tsx 对 pageCount 的处理）。
-   请按「已知页数」渲染，并监听现有的 window.yiben.events.onChapterPageCount 广播，
+   请按「已知页数」渲染，并监听现有的 window.yudu.events.onChapterPageCount 广播，
    收到后扩展网格。不要在 pageCount=0 时渲染空面板或报错。
 3. 用 @tanstack/react-virtual 做虚拟化，一次只渲染视口内的项 —— 几百页时不能全量挂载。
 4. 当前页高亮；面板打开时自动把当前页滚动进视野；点击缩略图调用 setPage 并关闭面板。
-5. 书签页加角标（书签数据用 window.yiben.bookmarks.list(seriesId)）。
+5. 书签页加角标（书签数据用 window.yudu.bookmarks.list(seriesId)）。
 6. 快捷键 G 打开、Esc 关闭；同步更新 src/renderer/src/routes/reader/KeyboardHelp.tsx。
    注意 G 不要与现有快捷键冲突（现有：方向键/空格/PageUp/PageDown/Home/End/C/D/M/S/R/T/B/F/回车/?/Esc）。
 
@@ -806,12 +827,12 @@ src/main/rescan.ts 导出了 runExclusiveScan(fn)，用于独占型扫描任务�
 
 ## 目标
 
-定期把 `yiben.db` 快照到用户目录，异常时可一键回滚。
+定期把 `yudu.db` 快照到用户目录，异常时可一键回滚。
 
 ## 实现要点
 
 - 用 better-sqlite3 的 `db.backup(path)` API（同步，但官方支持且安全），或更简单：定期 `VACUUM INTO '<path>'`（生成一致性快照，不需要停写）。
-- 建议：每次启动时快照一份，保留最近 7 份，超出删除最旧的。存 `%APPDATA%/一本 Yiben/backups/yiben-YYYYMMDD-HHmmss.db`。
+- 建议：每次启动时快照一份，保留最近 7 份，超出删除最旧的。存 `%APPDATA%/雨读 Yudu/backups/yudu-YYYYMMDD-HHmmss.db`。
 - 设置页展示备份列表 + 「立即备份」「恢复此备份」；恢复需二次确认（会覆盖当前进度）。
 - 已有 `src/main/dataTransfer.ts`（JSON 导入导出），备份是它的补充（完整库快照）。
 
@@ -821,9 +842,9 @@ src/main/rescan.ts 导出了 runExclusiveScan(fn)，用于独占型扫描任务�
 ```
 【前置通用上下文块见文档第 0 节】
 
-任务：给「一本 Yiben」增加 SQLite 数据库自动备份与一键恢复。
+任务：给「雨读 Yudu」增加 SQLite 数据库自动备份与一键恢复。
 
-背景：数据库文件是 app.getPath('userData')/yiben.db（见 src/main/db/index.ts 的 openDb），
+背景：数据库文件是 app.getPath('userData')/yudu.db（见 src/main/db/index.ts 的 openDb），
 WAL 模式。项目已有 src/main/dataTransfer.ts 做 JSON 进度导入导出，本次是它的补充
 （完整库快照，包含书库结构，而不只是进度）。
 
@@ -831,7 +852,7 @@ WAL 模式。项目已有 src/main/dataTransfer.ts 做 JSON 进度导入导出�
 1. 新建 src/main/backup.ts：
    - backupNow(): 用 SQLite 的 `VACUUM INTO '<目标路径>'` 生成一致性快照
      （比直接拷文件安全，WAL 模式下拷文件可能拿到不一致状态）。
-     目标：app.getPath('userData')/backups/yiben-YYYYMMDD-HHmmss.db
+     目标：app.getPath('userData')/backups/yudu-YYYYMMDD-HHmmss.db
    - listBackups(): 读取该目录，返回 [{ file, size, at }]
    - restore(file): 二次确认后，把当前 db 关闭 → 用备份覆盖 → 重新 openDb。
      覆盖前务必先把「当前 db」另存一份 .before-restore，留退路。
@@ -873,7 +894,7 @@ WAL 模式。项目已有 src/main/dataTransfer.ts 做 JSON 进度导入导出�
 ```
 【前置通用上下文块见文档第 0 节】
 
-任务：给「一本 Yiben」增加 ComicInfo.xml 回写 —— 把用户在系列页编辑的元数据写回文件。
+任务：给「雨读 Yudu」增加 ComicInfo.xml 回写 —— 把用户在系列页编辑的元数据写回文件。
 
 背景：读取侧已有 src/main/scanner/comicinfo.ts（解析 ComicInfo.xml）。项目已依赖
 fast-xml-parser（可用其 XMLBuilder 生成 XML）。章节类型见 chapters.kind，
@@ -925,7 +946,7 @@ fast-xml-parser（可用其 XMLBuilder 生成 XML）。章节类型见 chapters.
 ```
 【前置通用上下文块见文档第 0 节】
 
-任务：给「一本 Yiben」增加「疑似重复系列检测与手动合并」。
+任务：给「雨读 Yudu」增加「疑似重复系列检测与手动合并」。
 
 背景：series 表字段见 src/main/db/index.ts 的 SeriesRow（id, library_id, title, folder_path 等）；
 chapters 通过 series_id 外键关联并带 ON DELETE CASCADE；进度在 progress 表（按 chapter_id 主键）。

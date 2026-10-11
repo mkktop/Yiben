@@ -6,6 +6,7 @@ import { useDataStore } from '@/stores/data'
 import { errorMessage } from '@/lib/utils'
 import { useCurrentPageObserver } from './useCurrentPageObserver'
 import type { ReaderChapterInfo } from '@shared/types'
+import { createPdfLoad } from './pdfLoader'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
 
@@ -22,7 +23,6 @@ export function PdfViewer({ info, initialPage, onCurrentPage }: PdfViewerProps) 
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null)
   const [error, setError] = useState('')
   const [colWidth, setColWidth] = useState(760)
-  const loadingTask = useRef<pdfjsLib.PDFDocumentLoadingTask | null>(null)
 
   const chapterId = info.chapter.id
 
@@ -32,29 +32,29 @@ export function PdfViewer({ info, initialPage, onCurrentPage }: PdfViewerProps) 
     // （atLastScreen 可能因此误判「已读完」落库）。loadingTask.destroy 同时中断在途加载。
     let cancelled = false
     setError('')
+    setPdf(null)
+    const load = createPdfLoad(`yudu://file/${chapterId}`, {
+      document: (options) => pdfjsLib.getDocument(options),
+      range: (length, initial, request, abort) => {
+        class Transport extends pdfjsLib.PDFDataRangeTransport {
+          requestDataRange(begin: number, end: number): void {
+            request(begin, end)
+          }
+          abort(): void {
+            abort()
+          }
+        }
+        return new Transport(length, initial)
+      }
+    })
     void (async () => {
       try {
-        // 优先走 yiben:// 协议流式加载（大 PDF 不整包过 IPC 结构化克隆）；
-        // 协议不可用时兜底回 IPC 整包字节
-        let data: Uint8Array
-        try {
-          const resp = await fetch(`yiben://file/${chapterId}`)
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-          data = new Uint8Array(await resp.arrayBuffer())
-        } catch {
-          const buf = await window.yiben.reader.file(chapterId)
-          if (!buf) throw new Error('文件读取失败')
-          data = new Uint8Array(buf)
-        }
-        // pdf.js 会 transfer 缓冲区，data 本身已是独立拷贝
-        const task = pdfjsLib.getDocument({ data })
-        loadingTask.current = task
-        const doc = await task.promise
+        const doc = await load.promise
         if (cancelled) return
         setPdf(doc)
         useReaderStore.setState({ pageCount: doc.numPages })
         // 主进程驱动层不解析 PDF，页数由这里回填进数据库
-        void window.yiben.reader
+        void window.yudu.reader
           .setPageCount(chapterId, doc.numPages)
           .then((changed) => {
             if (changed && !cancelled) useDataStore.getState().bump()
@@ -66,8 +66,7 @@ export function PdfViewer({ info, initialPage, onCurrentPage }: PdfViewerProps) 
     })()
     return () => {
       cancelled = true
-      loadingTask.current?.destroy().catch(() => {})
-      loadingTask.current = null
+      load.cancel()
     }
   }, [chapterId])
 
@@ -126,29 +125,43 @@ function PdfPage({
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [visible, setVisible] = useState(false)
+  const [ratio, setRatio] = useState(3 / 4)
+  const [error, setError] = useState('')
 
   useEffect(() => {
     const el = ref.current
     if (!el) return
     const io = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting)) setVisible(true)
+        setVisible(entries.some((e) => e.isIntersecting))
       },
-      { rootMargin: '800px 0px' }
+      { root: el.parentElement?.parentElement, rootMargin: '800px 0px' }
     )
     io.observe(el)
     return () => io.disconnect()
   }, [])
 
   useEffect(() => {
-    if (!visible) return
+    if (!visible) {
+      const canvas = ref.current?.querySelector('canvas')
+      if (canvas) {
+        canvas.width = 0
+        canvas.height = 0
+      }
+      ref.current?.replaceChildren()
+      return
+    }
     let cancelled = false
     let task: { cancel: () => void } | null = null
+    let pageProxy: pdfjsLib.PDFPageProxy | null = null
+    setError('')
     void (async () => {
       try {
         const page = await pdf.getPage(num)
         if (cancelled) return
+        pageProxy = page
         const base = page.getViewport({ scale: 1 })
+        setRatio(base.width / base.height)
         const viewport = page.getViewport({ scale: width / base.width })
         const canvas = document.createElement('canvas')
         canvas.width = viewport.width
@@ -165,7 +178,8 @@ function PdfPage({
         canvas.style.display = 'block'
         canvas.dataset.page = String(num - 1)
         host.replaceChildren(canvas)
-      } catch {
+      } catch (err) {
+        if (!cancelled) setError(errorMessage(err))
         // 渲染任务被取消（切话/卸载/宽度变化重渲染）属正常流程，不向全局抛未捕获异常
       }
     })()
@@ -174,6 +188,13 @@ function PdfPage({
       // 未完成的渲染任务立即取消：否则切话/卸载后 pdfjs 仍在后台渲染浪费 CPU，
       // 文档销毁后还可能抛出无人接住的异常
       task?.cancel()
+      const canvas = ref.current?.querySelector('canvas')
+      if (canvas) {
+        canvas.width = 0
+        canvas.height = 0
+      }
+      ref.current?.replaceChildren()
+      pageProxy?.cleanup()
     }
   }, [visible, pdf, num, width])
 
@@ -182,7 +203,9 @@ function PdfPage({
       ref={ref}
       data-page={num - 1}
       className="w-full overflow-hidden bg-white shadow-lg"
-      style={{ aspectRatio: '3 / 4' }}
-    />
+      style={{ width, maxWidth: '100%', aspectRatio: String(ratio) }}
+    >
+      {error && <p className="p-4 text-sm text-red-600">页面渲染失败：{error}</p>}
+    </div>
   )
 }

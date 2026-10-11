@@ -9,7 +9,7 @@ import { getDriver } from './index'
 
 let dir = ''
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), 'yiben-sniff-'))
+  dir = mkdtempSync(join(tmpdir(), 'yudu-sniff-'))
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 

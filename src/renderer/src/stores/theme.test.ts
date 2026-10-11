@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 function stubDom(seed?: string): { cls: Set<string>; dataset: Record<string, string> } {
   const cls = new Set<string>()
   const dataset: Record<string, string> = {}
-  const storage = new Map<string, string>(seed ? [['yiben-theme', seed]] : [])
+  const storage = new Map<string, string>(seed ? [['yudu-theme', seed]] : [])
   const localStorageStub = {
     getItem: (k: string) => storage.get(k) ?? null,
     setItem: (k: string, v: string) => void storage.set(k, v),
@@ -57,7 +57,28 @@ describe('theme store', () => {
     expect(useThemeStore.getState().theme).toBe('comic')
   })
 
-  it('toggle 在 paper/comic 间切换并同步 DOM（comic 挂 .dark）', async () => {
+  it.each(['unknown', null, 42, {}])('损坏的主题配置 %j 恢复为纸墨并可正常轮换', async (theme) => {
+    const { cls, dataset } = stubDom(JSON.stringify({ state: { theme }, version: 1 }))
+    const { useThemeStore } = await import('./theme')
+    await flush()
+    expect(useThemeStore.getState().theme).toBe('paper')
+    expect(dataset.theme).toBe('paper')
+    expect(cls.has('dark')).toBe(false)
+    useThemeStore.getState().toggle()
+    expect(useThemeStore.getState().theme).toBe('comic')
+    expect(dataset.theme).toBe('comic')
+  })
+
+  it('保存霓虹主题后重新加载仍保持选择和深色样式', async () => {
+    const { dataset, cls } = stubDom(JSON.stringify({ state: { theme: 'neon' }, version: 1 }))
+    const { useThemeStore } = await import('./theme')
+    await flush()
+    expect(useThemeStore.getState().theme).toBe('neon')
+    expect(dataset.theme).toBe('neon')
+    expect(cls.has('dark')).toBe(true)
+  })
+
+  it('toggle 三态轮换 paper→comic→neon→paper（comic/neon 挂 .dark）', async () => {
     const { cls, dataset } = stubDom()
     const { useThemeStore } = await import('./theme')
     expect(useThemeStore.getState().theme).toBe('paper')
@@ -66,6 +87,11 @@ describe('theme store', () => {
     expect(useThemeStore.getState().theme).toBe('comic')
     expect(cls.has('dark')).toBe(true)
     expect(dataset.theme).toBe('comic')
+
+    useThemeStore.getState().toggle()
+    expect(useThemeStore.getState().theme).toBe('neon')
+    expect(cls.has('dark')).toBe(true)
+    expect(dataset.theme).toBe('neon')
 
     useThemeStore.getState().toggle()
     expect(useThemeStore.getState().theme).toBe('paper')

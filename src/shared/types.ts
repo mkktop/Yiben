@@ -10,6 +10,28 @@ export interface Library {
   family_id?: string | null
 }
 
+export interface DatabaseBackup {
+  id: string
+  createdAt: number
+  bytes: number
+  safety: boolean
+}
+export interface WebDavConfig {
+  name: string
+  url: string
+  username: string
+  password: string
+}
+export interface MetadataCandidate {
+  id: string
+  title: string
+  author: string
+  description: string
+  status: string
+  tags: string[]
+  url: string
+}
+
 export interface CloudEntryLite {
   id: string
   name: string
@@ -67,6 +89,7 @@ export interface Chapter {
 export interface ChapterWithProgress extends Chapter {
   read_page: number | null
   completed: number | null
+  read_updated_at: number | null
 }
 
 export interface SeriesDetail {
@@ -171,6 +194,18 @@ export interface PrefetchDone {
   error?: string
   /** 重试后仍失败的章节标题（其余章节照常完成） */
   failed?: string[]
+  offline?: OfflineStatus
+}
+
+export interface OfflineStatus {
+  seriesId: number
+  total: number
+  complete: number
+  bytes: number
+  requiredBytes: number
+  pinned: boolean
+  missing: string[]
+  capacityExceeded: boolean
 }
 
 /** 云端风控/会话异常通知（主进程推送） */
@@ -181,6 +216,13 @@ export interface CloudNotice {
 
 /** 阅读偏好（按系列记忆，存主进程 electron-store） */
 export interface ReaderPrefs {
+  enhance?: boolean
+  sharpness?: number
+  autoTrim?: boolean
+  contrast?: number
+  brightness?: number
+  warmth?: number
+  eyeSchedule?: boolean
   /** single | double | webtoon */
   mode?: 'single' | 'double' | 'webtoon'
   /** width | height | original */
@@ -196,16 +238,19 @@ export interface ReaderPrefs {
 }
 
 export function coverUrl(seriesId: number): string {
-  return `yiben://thumb/${seriesId}`
+  return `yudu://thumb/${seriesId}`
 }
 
-export function pageUrl(chapterId: number, index: number): string {
-  return `yiben://page/${chapterId}/${index}`
+export function pageUrl(chapterId: number, index: number, prefs?: ReaderPrefs): string {
+  const base = `yudu://page/${chapterId}/${index}`
+  return prefs?.enhance
+    ? `${base}?enhance=1&sharpness=${prefs.sharpness ?? 1}&trim=${prefs.autoTrim ? 1 : 0}&contrast=${prefs.contrast ?? 1}`
+    : base
 }
 
 /** 缩略图条用的小图（主进程 sharp 缩小并落盘缓存） */
 export function pageThumbUrl(chapterId: number, index: number): string {
-  return `yiben://page-thumb/${chapterId}/${index}`
+  return `yudu://page-thumb/${chapterId}/${index}`
 }
 
 export function parseTags(tags: string | null): string[] {

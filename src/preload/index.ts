@@ -6,10 +6,42 @@ import type {
   PrefetchDone,
   PrefetchProgress,
   ShelfInfo,
-  TagInfo
+  TagInfo,
+  DatabaseBackup,
+  OfflineStatus,
+  WebDavConfig,
+  Library,
+  ReaderPrefs,
+  MetadataCandidate,
+  Series
 } from '../shared/types'
 
 const api = {
+  metadata: {
+    search: (title: string): Promise<MetadataCandidate[]> =>
+      ipcRenderer.invoke('metadata:search', title),
+    apply: (id: number, candidate: string): Promise<void> =>
+      ipcRenderer.invoke('metadata:apply', { id, candidate }),
+    write: (id: number): Promise<string[]> => ipcRenderer.invoke('metadata:write', id)
+  },
+  webdav: {
+    add: (config: WebDavConfig): Promise<Library> => ipcRenderer.invoke('webdav:add', config),
+    list: (
+      id: number,
+      folder = 'root'
+    ): Promise<Array<{ id: string; name: string; isDir: boolean; size: number }>> =>
+      ipcRenderer.invoke('webdav:list', { id, folder })
+  },
+  offline: {
+    status: (id: number): Promise<OfflineStatus> => ipcRenderer.invoke('cloud:offlineStatus', id),
+    pin: (id: number, pinned: boolean): Promise<OfflineStatus> =>
+      ipcRenderer.invoke('cloud:offlinePin', { id, pinned })
+  },
+  backup: {
+    list: (): Promise<DatabaseBackup[]> => ipcRenderer.invoke('backup:list'),
+    create: (): Promise<DatabaseBackup> => ipcRenderer.invoke('backup:create'),
+    restore: (id: string): Promise<void> => ipcRenderer.invoke('backup:restore', id)
+  },
   appWindow: {
     minimize: (): Promise<void> => ipcRenderer.invoke('appWindow:minimize'),
     toggleMaximize: (): Promise<boolean> => ipcRenderer.invoke('appWindow:toggleMaximize'),
@@ -31,6 +63,10 @@ const api = {
     rescan: (id: number) => ipcRenderer.invoke('libraries:rescan', id)
   },
   series: {
+    merge: (source: number, target: number): Promise<{ chapters: number }> =>
+      ipcRenderer.invoke('series:merge', { source, target }),
+    mergeSources: (id: number): Promise<Series[]> => ipcRenderer.invoke('series:mergeSources', id),
+    unmerge: (id: number): Promise<void> => ipcRenderer.invoke('series:unmerge', id),
     list: (opts?: {
       libraryId?: number
       query?: string
@@ -48,8 +84,7 @@ const api = {
     updateMeta: (id: number, patch: Record<string, unknown>) =>
       ipcRenderer.invoke('series:updateMeta', { id, patch }),
     rescan: (id: number) => ipcRenderer.invoke('series:rescan', id),
-    markRead: (id: number, read: boolean) =>
-      ipcRenderer.invoke('series:markRead', { id, read }),
+    markRead: (id: number, read: boolean) => ipcRenderer.invoke('series:markRead', { id, read }),
     resetProgress: (id: number) => ipcRenderer.invoke('series:resetProgress', id)
   },
   config: {
@@ -100,10 +135,13 @@ const api = {
     recent: () => ipcRenderer.invoke('home:recent')
   },
   stats: {
+    time: (chapterId: number, ms: number): Promise<void> =>
+      ipcRenderer.invoke('stats:time', { chapterId, ms }),
     /** 阅读统计（热力图/指标卡）：最近 days 天的每日页数与连续天数等 */
     overview: (days?: number) =>
       ipcRenderer.invoke('stats:overview', days) as Promise<{
-        days: Array<{ day: string; pages: number }>
+        totalMinutes: number
+        days: Array<{ day: string; pages: number; minutes: number }>
         streak: number
         totalPages: number
         totalDays: number
@@ -118,12 +156,13 @@ const api = {
       version?: string
       notes?: string
       error?: string
+      channel?: 'r2' | 'github'
     }> => ipcRenderer.invoke('app:check-update'),
     download: (): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke('app:download-update'),
     install: (): Promise<void> => ipcRenderer.invoke('app:install-update'),
     /** renderer 重载后恢复：是否有已下载待安装的版本 */
-    state: (): Promise<{ ready: string; downloading: boolean }> =>
+    state: (): Promise<{ ready: string; downloading: boolean; channel: 'r2' | 'github' | '' }> =>
       ipcRenderer.invoke('app:update-state'),
     onProgress: (cb: (percent: number) => void) => {
       const listener = (_e: unknown, percent: number): void => cb(percent)
@@ -161,23 +200,20 @@ const api = {
     setPageCount: (chapterId: number, pageCount: number) =>
       ipcRenderer.invoke('reader:setPageCount', { chapterId, pageCount }) as Promise<boolean>,
     getPrefs: (seriesId: number) => ipcRenderer.invoke('reader:prefs:get', seriesId),
-    setPrefs: (seriesId: number, prefs: {
-      mode?: 'single' | 'double' | 'webtoon'
-      fit?: 'width' | 'height' | 'original'
-      rtl?: boolean
-      rotate?: number
-      spreadOffset?: 0 | 1
-      zoom?: number
-    }) => ipcRenderer.invoke('reader:prefs:set', { seriesId, prefs }),
+    setPrefs: (
+      seriesId: number,
+      prefs: ReaderPrefs & {
+        mode?: 'single' | 'double' | 'webtoon'
+        fit?: 'width' | 'height' | 'original'
+        rtl?: boolean
+        rotate?: number
+        spreadOffset?: 0 | 1
+        zoom?: number
+      }
+    ) => ipcRenderer.invoke('reader:prefs:set', { seriesId, prefs }),
     getDefaults: () => ipcRenderer.invoke('reader:defaults:get'),
-    setDefaults: (prefs: {
-      mode?: 'single' | 'double' | 'webtoon'
-      fit?: 'width' | 'height' | 'original'
-      rtl?: boolean
-      rotate?: number
-      spreadOffset?: 0 | 1
-      zoom?: number
-    }) => ipcRenderer.invoke('reader:defaults:set', prefs)
+    setDefaults: (prefs: ReaderPrefs): Promise<ReaderPrefs> =>
+      ipcRenderer.invoke('reader:defaults:set', prefs)
   },
   progress: {
     save: (chapterId: number, page: number, completed?: boolean) =>
@@ -187,9 +223,24 @@ const api = {
   },
   openFile: {
     /** 领取冷启动暂存的待打开章节 id（没有则 null）；与 events.onOpenFile 的推送互补 */
-    take: (): Promise<number | null> => ipcRenderer.invoke('app:takeOpenFile') as Promise<number | null>
+    take: (): Promise<number | null> =>
+      ipcRenderer.invoke('app:takeOpenFile') as Promise<number | null>
+  },
+  bossKey: {
+    /** 当前实际生效的老板键加速键（'' = 候选全部被占用/注册失败） */
+    get: (): Promise<string> => ipcRenderer.invoke('app:bossKey') as Promise<string>,
+    /** 设置主键（'' = 自动按候选顺序挑选）；返回重注册后的实际生效键 */
+    set: (acc: string): Promise<string> =>
+      ipcRenderer.invoke('app:bossKey:set', acc) as Promise<string>
   },
   events: {
+    onLibraryChanged: (cb: () => void): (() => void) => {
+      const listener = (): void => cb()
+      ipcRenderer.on('library:changed', listener)
+      return () => {
+        ipcRenderer.removeListener('library:changed', listener)
+      }
+    },
     onScanProgress: (cb: (payload: unknown) => void) => {
       const listener = (_e: unknown, payload: unknown): void => cb(payload)
       ipcRenderer.on('scan:progress', listener)
@@ -208,10 +259,8 @@ const api = {
     },
     /** 章节页数回填（云端压缩包整包下载后主进程才知道真实页数） */
     onChapterPageCount: (cb: (payload: { chapterId: number; pageCount: number }) => void) => {
-      const listener = (
-        _e: unknown,
-        payload: { chapterId: number; pageCount: number }
-      ): void => cb(payload)
+      const listener = (_e: unknown, payload: { chapterId: number; pageCount: number }): void =>
+        cb(payload)
       ipcRenderer.on('chapter:pageCount', listener)
       return (): void => {
         ipcRenderer.removeListener('chapter:pageCount', listener)
@@ -219,7 +268,10 @@ const api = {
     },
     /** 页尺寸探测进度（双页模式跨页识别） */
     onChapterPageDims: (
-      cb: (payload: { chapterId: number; dims: Array<{ idx: number; w: number; h: number }> }) => void
+      cb: (payload: {
+        chapterId: number
+        dims: Array<{ idx: number; w: number; h: number }>
+      }) => void
     ) => {
       const listener = (
         _e: unknown,
@@ -232,16 +284,14 @@ const api = {
     },
     /** 离线预取进度 */
     onPrefetchProgress: (cb: (payload: PrefetchProgress) => void) => {
-      const listener = (_e: unknown, payload: PrefetchProgress): void =>
-        cb(payload)
+      const listener = (_e: unknown, payload: PrefetchProgress): void => cb(payload)
       ipcRenderer.on('prefetch:progress', listener)
       return (): void => {
         ipcRenderer.removeListener('prefetch:progress', listener)
       }
     },
     onPrefetchDone: (cb: (payload: PrefetchDone) => void) => {
-      const listener = (_e: unknown, payload: PrefetchDone): void =>
-        cb(payload)
+      const listener = (_e: unknown, payload: PrefetchDone): void => cb(payload)
       ipcRenderer.on('prefetch:done', listener)
       return (): void => {
         ipcRenderer.removeListener('prefetch:done', listener)
@@ -293,11 +343,14 @@ const api = {
     cacheClearSeries: (seriesId: number) =>
       ipcRenderer.invoke('cloud:cacheClearSeries', seriesId) as Promise<{ bytes: number }>,
     prefetch: (seriesId: number) =>
-      ipcRenderer.invoke('cloud:prefetch', seriesId) as Promise<{ seriesId: number; done: number; total: number }>,
+      ipcRenderer.invoke('cloud:prefetch', seriesId) as Promise<{
+        seriesId: number
+        done: number
+        total: number
+      }>,
     prefetchCancel: (seriesId: number) =>
       ipcRenderer.invoke('cloud:prefetchCancel', seriesId) as Promise<boolean>,
-    prefetchRunning: () =>
-      ipcRenderer.invoke('cloud:prefetchRunning') as Promise<number[]>,
+    prefetchRunning: () => ipcRenderer.invoke('cloud:prefetchRunning') as Promise<number[]>,
     browse: (folderId?: string, familyId?: string) =>
       ipcRenderer.invoke('cloud:browse', { folderId, familyId }),
     addLibrary: (folderId: string, familyId: string | undefined, name: string) =>
@@ -325,16 +378,16 @@ const api = {
   }
 }
 
-export type YibenApi = typeof api
+export type YuduApi = typeof api
 
-// 只暴露白名单化的 yiben API：不注入 @electron-toolkit 的通用 IPC 桥，
+// 只暴露白名单化的 yudu API：不注入 @electron-toolkit 的通用 IPC 桥，
 // 否则窗口内任何来源的页面都能不限 channel/参数地直呼 ipcRenderer
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld('yiben', api)
+    contextBridge.exposeInMainWorld('yudu', api)
   } catch (error) {
     console.error(error)
   }
 } else {
-  Object.assign(globalThis, { yiben: api })
+  Object.assign(globalThis, { yudu: api })
 }

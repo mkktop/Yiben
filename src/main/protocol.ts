@@ -1,11 +1,15 @@
-import { readFile } from 'fs/promises'
+import { createReadStream } from 'fs'
+import { readFile, stat } from 'fs/promises'
 import { protocol } from 'electron'
+import { Readable } from 'stream'
 import { coverChapterFor, getChapter, getChapterSource } from './db'
 import { getDriver, MAX_ARCHIVE_ENTRY_BYTES, UnsupportedFormatError } from './archives'
 import { longPath, mimeOfImage } from './util/paths'
 import { thumbPath, generateCloudCover } from './thumbnail'
 import { buildPageThumb, pageThumbPath } from './pageThumb'
 import { ensureChapterPage, ensureLocalChapterPath, readEnsuredPage } from './cloud189/ensure'
+import { parseByteRange } from './util/httpRange'
+import { enhanceImage } from './imageEnhance'
 
 /**
  * 协议响应 CSP：内容只作为图片/文件消费，禁止一切脚本执行——
@@ -14,16 +18,19 @@ import { ensureChapterPage, ensureLocalChapterPath, readEnsuredPage } from './cl
 const CSP = "default-src 'none'; style-src 'unsafe-inline'"
 
 /**
- * yiben:// 自定义协议：
- *   yiben://thumb/{seriesId}               → 系列封面（WebP）
- *   yiben://page/{chapterId}/{index}       → 某话第 index 页原图
- *   yiben://page-thumb/{chapterId}/{index} → 某话第 index 页缩略图（缩略图条用，省流量）
- *   yiben://file/{chapterId}               → 整包原始字节（PDF 等）
+ * yudu:// 自定义协议：
+ *   yudu://thumb/{seriesId}               → 系列封面（WebP）
+ *   yudu://page/{chapterId}/{index}       → 某话第 index 页原图
+ *   yudu://page-thumb/{chapterId}/{index} → 某话第 index 页缩略图（缩略图条用，省流量）
+ *   yudu://file/{chapterId}               → 整包原始字节（PDF 等）
  * 用 <img> 直接加载，吃满 Chromium 解码缓存，翻页零拷贝。
  */
 export function registerProtocol(): void {
   protocol.registerSchemesAsPrivileged([
-    { scheme: 'yiben', privileges: { standard: true, secure: true, supportFetchAPI: true } }
+    {
+      scheme: 'yudu',
+      privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true }
+    }
   ])
 }
 
@@ -55,6 +62,30 @@ function readChapterPageDedup(
   return task
 }
 
+/** 缩略图/封面首次生成的并发去重：缩略图条与预载会同时打到同一张，重复解码落盘纯浪费 */
+const thumbInflight = new Map<string, Promise<unknown>>()
+const coverInflight = new Map<number, Promise<unknown>>()
+
+function buildPageThumbDedup(chapterId: number, index: number, source: Buffer): Promise<unknown> {
+  const key = `${chapterId}/${index}`
+  const running = thumbInflight.get(key)
+  if (running) return running
+  const task = buildPageThumb(source, chapterId, index).finally(() => thumbInflight.delete(key))
+  thumbInflight.set(key, task)
+  return task
+}
+
+function generateCloudCoverDedup(
+  seriesId: number,
+  chapter: { id: number; kind: string; size: number }
+): Promise<unknown> {
+  const running = coverInflight.get(seriesId)
+  if (running) return running
+  const task = generateCloudCover(seriesId, chapter).finally(() => coverInflight.delete(seriesId))
+  coverInflight.set(seriesId, task)
+  return task
+}
+
 async function readChapterPage(
   chapterId: number,
   index: number
@@ -79,10 +110,10 @@ async function readChapterPage(
 }
 
 export function attachProtocolHandlers(): void {
-  protocol.handle('yiben', async (request) => {
+  protocol.handle('yudu', async (request) => {
     try {
       const url = new URL(request.url)
-      // standard 协议下 yiben://page/3/0 → hostname=page, pathname=/3/0
+      // standard 协议下 yudu://page/3/0 → hostname=page, pathname=/3/0
       const kind = url.hostname
       const segments = url.pathname.split('/').filter(Boolean)
 
@@ -104,7 +135,7 @@ export function attachProtocolHandlers(): void {
           if (!chapter) return new Response('no cover', { status: 404 })
           const src = getChapterSource(chapter.id)
           if (!src || src.libraryKind === 'local') return new Response('not found', { status: 404 })
-          await generateCloudCover(seriesId, chapter)
+          await generateCloudCoverDedup(seriesId, chapter)
           const buf = await readFile(longPath(file)).catch(() => null)
           if (!buf) return new Response('cover not ready', { status: 503 })
           return new Response(new Uint8Array(buf), {
@@ -119,9 +150,18 @@ export function attachProtocolHandlers(): void {
 
       if (kind === 'page') {
         const { buf, name } = await readChapterPageDedup(Number(segments[0]), Number(segments[1]))
-        return new Response(new Uint8Array(buf), {
+        const enhanced = url.searchParams.get('enhance') === '1'
+        const output = enhanced
+          ? await enhanceImage(buf, {
+              enhance: true,
+              sharpness: Number(url.searchParams.get('sharpness') ?? 1),
+              contrast: Number(url.searchParams.get('contrast') ?? 1),
+              autoTrim: url.searchParams.get('trim') === '1'
+            })
+          : buf
+        return new Response(new Uint8Array(output), {
           headers: {
-            'content-type': mimeOfImage(name),
+            'content-type': output !== buf ? 'image/webp' : mimeOfImage(name),
             'cache-control': 'max-age=86400',
             'content-security-policy': CSP
           }
@@ -134,9 +174,9 @@ export function attachProtocolHandlers(): void {
         const file = pageThumbPath(chapterId, index)
         let buf = await readFile(longPath(file)).catch(() => null)
         if (!buf) {
-          // 首次请求：取原图后缩小落盘，之后直接命中缓存
+          // 首次请求：取原图后缩小落盘，之后直接命中缓存（并发请求共享同一次生成）
           const page = await readChapterPageDedup(chapterId, index)
-          await buildPageThumb(page.buf, chapterId, index)
+          await buildPageThumbDedup(chapterId, index, page.buf)
           buf = await readFile(longPath(file))
         }
         return new Response(new Uint8Array(buf), {
@@ -149,7 +189,20 @@ export function attachProtocolHandlers(): void {
       }
 
       if (kind === 'file') {
-        // 原始文件流（PDF 渲染等场景）；云端章节先确保整包已缓存
+        // 仅向应用自身的 file:// 来源与开发服务器开放 Fetch，不向任意网站开放本地文件。
+        const origin = request.headers.get('origin')
+        const devUrl = process.env['ELECTRON_RENDERER_URL']
+        const allowedOrigin =
+          origin === 'null' ? 'null' : devUrl && origin === new URL(devUrl).origin ? origin : null
+        const cors: Record<string, string> = allowedOrigin
+          ? {
+              'access-control-allow-origin': allowedOrigin,
+              'access-control-expose-headers': 'Content-Length, Content-Range, Accept-Ranges',
+              vary: 'Origin'
+            }
+          : {}
+        // 原始文件流（PDF 渲染等场景）；云端章节先确保整包已缓存。
+        // 流式响应：大 PDF（数百 MB）不再整包读进主进程内存
         const chapterId = Number(segments[0])
         const chapter = getChapter(chapterId)
         if (!chapter) return new Response('chapter not found', { status: 404 })
@@ -157,13 +210,29 @@ export function attachProtocolHandlers(): void {
         if (chapter.cloud_file_id || chapter.kind === 'cfolder') {
           path = await ensureLocalChapterPath(chapterId)
         }
-        const buf = await readFile(longPath(path))
-        return new Response(new Uint8Array(buf), {
-          headers: {
-            'content-type': chapter.kind === 'pdf' ? 'application/pdf' : 'application/octet-stream',
-            'cache-control': 'max-age=86400',
-            'content-security-policy': CSP
-          }
+        const full = longPath(path)
+        const st = await stat(full).catch(() => null)
+        if (!st?.isFile()) return new Response('file not found', { status: 404 })
+        const range = parseByteRange(request.headers.get('range'), st.size)
+        if (range === false)
+          return new Response(null, {
+            status: 416,
+            headers: { ...cors, 'content-range': `bytes */${st.size}` }
+          })
+        const headers: Record<string, string> = {
+          ...cors,
+          'content-type': chapter.kind === 'pdf' ? 'application/pdf' : 'application/octet-stream',
+          'content-length': String(range ? range.end - range.start + 1 : st.size),
+          'accept-ranges': 'bytes',
+          'cache-control': 'max-age=86400',
+          'content-security-policy': CSP
+        }
+        if (range) headers['content-range'] = `bytes ${range.start}-${range.end}/${st.size}`
+        if (request.method === 'HEAD') return new Response(null, { headers })
+        const stream = createReadStream(full, { ...range, signal: request.signal })
+        return new Response(Readable.toWeb(stream) as unknown as ReadableStream, {
+          status: range ? 206 : 200,
+          headers
         })
       }
 

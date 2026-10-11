@@ -2,7 +2,8 @@
 
 @custom-variant dark (&:is(.dark *));
 
-:root {
+:root,
+[data-theme='paper'] {
   --radius: 0.625rem;
 
   /* ============ 主题：纸墨书斋 · 浅色（暖纸 + 朱砂，默认） ============ */
@@ -40,6 +41,7 @@
   --ambient: oklch(0.92 0.045 88);
   /* 无封面占位底色 · 比 --muted 略暖 */
   --cover-placeholder: oklch(0.94 0.015 80);
+  color-scheme: light;
 
   /* 阴影 · 浅色轻而利落（暖色阴影） */
   --elevation-xs: 0 1px 2px 0 oklch(0.25 0.01 60 / 0.06);
@@ -53,7 +55,8 @@
 
 /* ============ 主题：现代漫画 · 深色「霓虹漫展」（data-theme="comic"） ============ */
 
-.dark {
+[data-theme='comic'] {
+  color-scheme: dark;
   /* 墨蓝黑 + 信号黄主色 + 霓虹青氛围；--radius 收紧出印刷感 */
   --radius: 0.45rem;
 
@@ -104,6 +107,70 @@
     transparent 1px
   );
   background-size: 14px 14px;
+}
+
+/* ============ 主题：霓虹夜读 · 深色「霓虹环彩」（data-theme="neon"） ============ */
+/* 与品牌方标同源：暗夜底 #12172a + 粉→紫→青环彩渐变（LogoMark / make-icon.js 对色） */
+
+[data-theme='neon'] {
+  color-scheme: dark;
+  --radius: 0.5rem;
+
+  --background: oklch(0.21 0.04 283);
+  --foreground: oklch(0.93 0.015 280);
+  --card: oklch(0.245 0.045 282);
+  --card-foreground: oklch(0.93 0.015 280);
+  --popover: oklch(0.255 0.05 282);
+  --popover-foreground: oklch(0.93 0.015 280);
+  --primary: oklch(0.67 0.2 8); /* 环彩起点 · 粉 #ff5c8a */
+  --primary-foreground: oklch(0.18 0.04 285); /* 环彩钮上压暗夜字，霓虹灯管感 */
+  --secondary: oklch(0.285 0.045 282);
+  --secondary-foreground: oklch(0.93 0.015 280);
+  --muted: oklch(0.28 0.045 282);
+  --muted-foreground: oklch(0.72 0.03 280);
+  --accent: oklch(0.32 0.06 295); /* 悬停带紫调 */
+  --accent-foreground: oklch(0.95 0.01 280);
+  --destructive: oklch(0.66 0.19 25);
+  --destructive-foreground: oklch(0.98 0.01 280);
+  --warning: oklch(0.8 0.13 80);
+  --warning-foreground: oklch(0.22 0.05 283);
+  --border: oklch(0.345 0.05 282);
+  --input: oklch(0.345 0.05 282);
+  --ring: oklch(0.76 0.13 215); /* 环彩收笔 · 青 #22d3ee */
+  --sidebar: oklch(0.225 0.042 283);
+  --sidebar-foreground: oklch(0.93 0.015 280);
+  --sidebar-primary: oklch(0.67 0.2 8);
+  --sidebar-primary-foreground: oklch(0.18 0.04 285);
+  --sidebar-accent: oklch(0.29 0.05 288);
+  --sidebar-accent-foreground: oklch(0.95 0.01 280);
+  --sidebar-border: oklch(0.31 0.05 282);
+  --sidebar-ring: oklch(0.76 0.13 215);
+
+  --ambient: oklch(0.45 0.12 320);
+  --cover-placeholder: oklch(0.28 0.05 282);
+
+  /* 霓虹招牌：辉光影（粉紫青光晕，区别于漫画的印刷墨影） */
+  --elevation-xs: 0 0 4px 0 oklch(0.67 0.2 8 / 0.14);
+  --elevation-sm: 0 1px 8px 0 oklch(0.64 0.19 300 / 0.2);
+  --elevation-md: 0 4px 18px -2px oklch(0.62 0.17 300 / 0.32);
+  --elevation-lg: 0 10px 36px -6px oklch(0.6 0.15 320 / 0.45);
+}
+
+/* 霓虹主题招牌：页面两角环境辉光（左粉右青，即方标环彩渐变的两端） */
+[data-theme='neon'] body {
+  background-image:
+    radial-gradient(1100px 480px at 88% -8%, oklch(0.7 0.12 215 / 0.13), transparent 62%),
+    radial-gradient(950px 440px at 6% -6%, oklch(0.67 0.2 8 / 0.11), transparent 58%);
+}
+
+/* 霓虹主题招牌：主按钮整条环彩渐变（粉→紫→青），配 --primary-foreground 暗字 */
+[data-theme='neon'] .bg-primary {
+  background-image: linear-gradient(
+    135deg,
+    oklch(0.67 0.2 8),
+    oklch(0.63 0.18 300) 52%,
+    oklch(0.7 0.12 220)
+  );
 }
 
 @theme inline {
@@ -167,6 +234,86 @@
     user-select: none;
   }
 }
+
+/* 主题卡片里的缩小书架，各自继承其主题令牌，不受当前页面明暗影响。 */
+.theme-preview {
+  display: flex;
+  height: 144px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--foreground);
+  background: var(--background);
+  pointer-events: none;
+}
+.theme-preview-sidebar {
+  display: flex;
+  width: 42px;
+  flex: 0 0 42px;
+  flex-direction: column;
+  gap: 9px;
+  align-items: center;
+  padding: 12px 5px;
+  border-right: 1px solid var(--sidebar-border);
+  background: var(--sidebar);
+}
+.theme-preview-logo {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  margin-bottom: 3px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--primary-foreground);
+  background: var(--primary);
+  font-size: 12px;
+  font-family: var(--font-serif);
+}
+.theme-preview-nav {
+  width: 25px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--border);
+}
+.theme-preview-nav.is-active { background: var(--primary); }
+.theme-preview-main { min-width: 0; flex: 1; }
+.theme-preview-header {
+  display: flex;
+  height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+.theme-preview-header span { width: 57%; height: 8px; border-radius: 9px; background: var(--muted); }
+.theme-preview-header i { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); }
+.theme-preview-content { padding: 12px; }
+.theme-preview-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.theme-preview-heading span { font-family: var(--font-serif); font-size: 11px; font-weight: 600; }
+.theme-preview-heading i { width: 26px; height: 6px; border-radius: 4px; background: var(--muted); }
+.theme-preview-books { display: flex; gap: 9px; }
+.theme-preview-book {
+  position: relative;
+  display: flex;
+  height: 68px;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklch, var(--primary) 20%, var(--border));
+  border-radius: 4px;
+  padding: 8px;
+  background: linear-gradient(145deg, color-mix(in oklch, var(--primary) 20%, var(--card)), var(--cover-placeholder));
+  box-shadow: var(--elevation-xs);
+}
+.theme-preview-book.book-1 { background: linear-gradient(160deg, var(--muted), color-mix(in oklch, var(--primary) 35%, var(--card))); }
+.theme-preview-book.book-2 { background: linear-gradient(120deg, var(--cover-placeholder), var(--accent)); }
+.theme-preview-book::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: color-mix(in oklch, var(--primary) 30%, transparent); }
+.theme-preview-book span { width: 68%; height: 5px; margin-bottom: 5px; border-radius: 3px; background: color-mix(in oklch, var(--foreground) 45%, transparent); }
+.theme-preview-book i { width: 42%; height: 3px; border-radius: 2px; background: color-mix(in oklch, var(--foreground) 20%, transparent); }
+.theme-preview[data-theme='comic'] .theme-preview-content { background-image: radial-gradient(color-mix(in oklch, var(--foreground) 8%, transparent) 0.7px, transparent 0.7px); background-size: 6px 6px; }
+.theme-preview[data-theme='neon'] .theme-preview-logo { background: linear-gradient(135deg, var(--primary), var(--ring)); }
 
 /* 细滚动条，贴合深色界面 */
 * {

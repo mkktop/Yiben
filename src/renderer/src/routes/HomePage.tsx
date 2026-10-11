@@ -57,10 +57,10 @@ export function HomePage() {
   const navigate = useNavigate()
   const version = useDataStore((s) => s.version)
   const { data: continueList } = useAsync<ContinueItem[]>(
-    () => window.yiben.home.continue(),
+    () => window.yudu.home.continue(),
     [version]
   )
-  const { data: recent } = useAsync<Series[]>(() => window.yiben.home.recent(), [version])
+  const { data: recent } = useAsync<Series[]>(() => window.yudu.home.recent(), [version])
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-10 p-8">

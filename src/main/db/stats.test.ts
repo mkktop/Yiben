@@ -21,7 +21,7 @@ import {
 let dir = ''
 
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), 'yiben-stats-'))
+  dir = mkdtempSync(join(tmpdir(), 'yudu-stats-'))
   mocks.userData = dir
   openDb()
   addLibrary('统计测试库', 'D:/stats')

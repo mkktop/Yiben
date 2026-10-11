@@ -18,7 +18,7 @@ export function CloudNoticeToast() {
   const [notice, setNotice] = useState<CloudNotice | null>(null)
 
   useEffect(() => {
-    return window.yiben.events.onCloudNotice((payload) => {
+    return window.yudu.events.onCloudNotice((payload) => {
       setNotice(payload)
     })
   }, [])

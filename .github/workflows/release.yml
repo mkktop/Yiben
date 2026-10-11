@@ -43,6 +43,7 @@ jobs:
       - name: 类型检查 + 单元测试
         run: |
           pnpm typecheck
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm test
 
       # pnpm dist = electron-vite build + electron-builder --win nsis --publish never
@@ -50,25 +51,26 @@ jobs:
       - name: 构建并打安装包
         run: pnpm dist
 
-      # 预览版（tag 含 -preview.N）：Release 标记 prerelease——稳定通道客户端
-      # 天然排除 prerelease。只传 exe + latest.yml（差分下载已禁用，无需 blockmap；
+      # 上传到 GitHub Release（正文取自仓库根 RELEASE_NOTES.md）。
+      # 本项目不出预览版：所有 tag 都是正式发布，prerelease 恒为 false。
+      # 只传 exe + latest.yml（差分下载已禁用，无需 blockmap；
       # *.yml 通配会把 builder-debug.yml 一并传上 Release）
-      - name: 上传到 GitHub Release（正文取自仓库根 RELEASE_NOTES.md）
+      - name: 上传到 GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          prerelease: ${{ contains(github.ref_name, '-preview.') }}
           body_path: RELEASE_NOTES.md
           files: |
-            dist/Yiben_*_setup.exe
+            dist/Yudu_*_setup.exe
             dist/latest.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # R2 更新渠道（应用内检查走 https://yiben.kaikun.top/latest.yml）：
+      # R2 更新渠道（应用内检查走 https://yudu-media.yeyushi.com/latest.yml）：
       # Cloudflare REST 直传对象，无需装 wrangler；latest.yml 的 url 字段由
-      # package.json publish.url（generic）生成，桶内对象名须与其一致（桶根直挂）
-      - name: 上传到 R2 更新渠道（yiben.kaikun.top）
+      # package.json publish.url（generic）生成，桶内对象名须与其一致（桶根直挂）。
+      # 先传 exe 后传 latest.yml：客户端只会在新包就位后被指向新版本
+      - name: 上传到 R2 更新渠道（yudu-media.yeyushi.com）
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         env:
@@ -76,10 +78,14 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $exe = Get-ChildItem dist/Yiben_*_setup.exe | Select-Object -First 1
-          if (-not $exe) { throw '找不到安装包 dist/Yiben_*_setup.exe' }
-          $base = "https://api.cloudflare.com/client/v4/accounts/$env:CF_ACCOUNT_ID/r2/buckets/yiben/objects"
+          $exe = Get-ChildItem dist/Yudu_*_setup.exe | Select-Object -First 1
+          if (-not $exe) { throw '找不到安装包 dist/Yudu_*_setup.exe' }
+          $base = "https://api.cloudflare.com/client/v4/accounts/$env:CF_ACCOUNT_ID/r2/buckets/yudu/objects"
           $h = @{ Authorization = "Bearer $env:CF_API_TOKEN" }
           Invoke-RestMethod -Method Put -Uri "$base/$($exe.Name)" -InFile $exe.FullName -Headers $h -ContentType 'application/octet-stream' | Out-Null
           Invoke-RestMethod -Method Put -Uri "$base/latest.yml" -InFile dist/latest.yml -Headers $h -ContentType 'text/yaml' | Out-Null
-          Write-Host "R2 已上传: $($exe.Name) + latest.yml"
+          # 上传核验：exe 与 latest.yml 缺一就是半发布状态（客户端会拿到 404 下载），
+          # 必须当场失败而不是等用户反馈
+          Invoke-WebRequest -Method Head -Uri "$base/$($exe.Name)" -Headers $h | Out-Null
+          Invoke-WebRequest -Method Head -Uri "$base/latest.yml" -Headers $h | Out-Null
+          Write-Host "R2 已上传并核验: $($exe.Name) + latest.yml"

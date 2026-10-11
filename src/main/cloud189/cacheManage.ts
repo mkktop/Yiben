@@ -1,7 +1,9 @@
 import { isAbsolute, join, relative } from 'path'
 import { mkdir, readdir, rm, stat } from 'fs/promises'
 import { cloudChapterRows, type CloudChapterCacheRow } from '../db'
-import { cloudCacheRoots, pruneIndex, resetIndex } from './cache'
+import { cloudCacheRoots, pruneIndex, resetIndex, withCacheMaintenance } from './cache'
+import { setOfflinePinned } from './offline'
+import { setSetting } from '../settings'
 import { longPath } from '../util/paths'
 
 export interface SeriesCache {
@@ -46,7 +48,10 @@ function insideCache(p: string): boolean {
  * 阅读时按页下载的页目录是同级的 `f-{章节id}`，两者不同，取父目录拼接。
  */
 function artifactsOf(row: CloudChapterCacheRow): string[] {
-  if (row.kind === 'cfolder') return [join(join(row.path, '..'), `f-${row.chapterId}`)]
+  if (row.kind === 'cfolder') {
+    const path = join(join(row.path, '..'), `f-${row.chapterId}`)
+    return insideCache(path) ? [path] : []
+  }
   if (row.cloudFileId && insideCache(row.path)) return [row.path]
   return []
 }
@@ -67,40 +72,61 @@ export async function seriesCacheSizes(): Promise<SeriesCache[]> {
 
 /** 删除某系列的全部缓存，返回清掉的字节数（封面缩略图不受影响） */
 export async function clearSeriesCache(seriesId: number): Promise<number> {
-  let cleared = 0
-  for (const row of cloudChapterRows()) {
-    if (row.seriesId !== seriesId) continue
-    for (const path of artifactsOf(row)) {
-      cleared += await pathSize(path)
-      await rm(longPath(path), { recursive: true, force: true }).catch(() => {})
+  return withCacheMaintenance(async () => {
+    const { cancelAllPrefetch } = await import('./prefetch')
+    cancelAllPrefetch()
+    setOfflinePinned(seriesId, false)
+    let cleared = 0
+    for (const row of cloudChapterRows()) {
+      if (row.seriesId !== seriesId) continue
+      for (const path of artifactsOf(row)) {
+        cleared += await pathSize(path)
+        await rm(longPath(path), { recursive: true, force: true })
+      }
     }
-  }
-  await pruneIndex()
-  return cleared
+    await pruneIndex()
+    return cleared
+  })
 }
 
 /** 清空所有网盘的缓存目录，返回清掉的字节数 */
 export async function clearAllCache(): Promise<number> {
-  let cleared = 0
-  for (const dir of cloudCacheRoots()) {
-    cleared += await pathSize(dir)
-    await rm(longPath(dir), { recursive: true, force: true }).catch(() => {})
-    await mkdir(longPath(dir), { recursive: true })
-  }
-  resetIndex()
-  return cleared
+  return withCacheMaintenance(async () => {
+    const { cancelAllPrefetch } = await import('./prefetch')
+    cancelAllPrefetch()
+    setSetting('offlinePinnedSeries', [])
+    setSetting('offlinePinPaths', [])
+    let cleared = 0
+    for (const dir of cloudCacheRoots()) {
+      cleared += await pathSize(dir)
+      await rm(longPath(dir), { recursive: true, force: true })
+      await mkdir(longPath(dir), { recursive: true })
+    }
+    await resetIndex()
+    return cleared
+  })
 }
 
 /** 删除书库前调用：清掉该库全部章节的缓存产物，返回清掉的字节数 */
 export async function clearLibraryCache(libraryId: number): Promise<number> {
-  let cleared = 0
-  for (const row of cloudChapterRows()) {
-    if (row.libraryId !== libraryId) continue
-    for (const path of artifactsOf(row)) {
-      cleared += await pathSize(path)
-      await rm(longPath(path), { recursive: true, force: true }).catch(() => {})
+  return withCacheMaintenance(async () => {
+    const { cancelAllPrefetch } = await import('./prefetch')
+    cancelAllPrefetch()
+    for (const id of new Set(
+      cloudChapterRows()
+        .filter((row) => row.libraryId === libraryId)
+        .map((row) => row.seriesId)
+    ))
+      setOfflinePinned(id, false)
+    let cleared = 0
+    for (const row of cloudChapterRows()) {
+      if (row.libraryId !== libraryId) continue
+      for (const path of artifactsOf(row)) {
+        cleared += await pathSize(path)
+        await rm(longPath(path), { recursive: true, force: true })
+      }
     }
-  }
-  await pruneIndex()
-  return cleared
+    await pruneIndex()
+    return cleared
+  })
 }

@@ -45,9 +45,7 @@ export interface CloudScanDeps {
 
 /** 卷文件夹：直接包含图片或漫画压缩包 */
 function isVolumeChildren(children: CloudEntry[]): boolean {
-  return children.some(
-    (e) => !e.isDir && (isImageFile(e.name) || Boolean(archiveKindOf(e.name)))
-  )
+  return children.some((e) => !e.isDir && (isImageFile(e.name) || Boolean(archiveKindOf(e.name))))
 }
 
 /**
@@ -67,7 +65,11 @@ async function listAllLimited(
       out[i] = await list(ids[i])
     }
   })
-  await Promise.all(workers)
+  const results = await Promise.allSettled(workers)
+  const failed = results.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected'
+  )
+  if (failed) throw failed.reason
   return out
 }
 
@@ -107,7 +109,12 @@ export async function scanCloudLibrary(
       const isWrapper =
         subDirs.length > 0 &&
         subDirs.length === children.length &&
-        (await listAllLimited(subDirs.map((s) => s.id), list)).every((c) => isVolumeChildren(c))
+        (
+          await listAllLimited(
+            subDirs.map((s) => s.id),
+            list
+          )
+        ).every((c) => isVolumeChildren(c))
       dirKind.set(d.id, isWrapper ? 'wrapper' : 'series')
     }
   }
@@ -179,10 +186,7 @@ export async function scanCloudLibrary(
         // 缓存文件名带 familyId 维度：个人云与家庭云的文件 id 是两套编号空间，
         // 不区分的话同 id 不同内容（且大小恰好相同）会互相命中错误缓存
         const ext = ch.name.slice(ch.name.lastIndexOf('.'))
-        const path = join(
-          cacheDir(),
-          `a-${familyId ? `f${familyId}-` : ''}${ch.cloudId}${ext}`
-        )
+        const path = join(cacheDir(), `a-${familyId ? `f${familyId}-` : ''}${ch.cloudId}${ext}`)
         upsertChapter({
           series_id: seriesId,
           title: parsed.title,

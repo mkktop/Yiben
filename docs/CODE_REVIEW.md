@@ -1,4 +1,9 @@
-# 一本 Yiben — 代码全面审查报告
+# 雨读 Yudu — 代码全面审查报告
+
+> **状态（2026-09-25 标注）：本报告基于 v0.1.1（2026-09-11），所列 P0/P1/P2 问题已在随后两轮修复
+> （2026-09-14 与 2026-09-19 的审查修复提交，见 git log「审查修复」）中全部处理完毕。**
+> 保留本文仅作历史记录与方法参考——**不要按本报告去修代码**，其中指出的问题在当前代码里已不存在，
+> 引用的行号也早已漂移。新的审查请以当前代码为基线另起报告。
 
 - 审查日期：2026-09-11
 - 审查范围：`src/main`（主进程）、`src/preload`、`src/renderer`（React）、`src/shared`、打包与依赖配置
@@ -91,9 +96,9 @@ const resp = await fetch(url, { signal: AbortSignal.timeout(30_000) })
 | 13 | `routes/reader/PdfViewer.tsx:122-147` | `page.render()` 的 task 未保存、卸载时未 `task.cancel()` | 切话/卸载后 pdfjs 仍在后台渲染，可能抛未捕获异常、浪费 CPU |
 | 14 | `ReaderPage.tsx:36`、`ReaderChrome.tsx:90` | `useReaderStore()` 不传选择器，订阅整个 store | 每次 `setPage`（条漫滚动时极频繁）触发整个阅读器子树 reconcile。改成细粒度选择器收益明显 |
 | 15 | `db/index.ts:621-640` | `continueReading` 用 `GROUP BY ... HAVING p2.updated_at = MAX(p2.updated_at)` | 依赖 SQLite「裸列取 min/max 行」的扩展行为，语义脆弱，可能返回非最新一话甚至整组被滤除。建议改成窗口函数或 `JOIN (SELECT series_id, MAX(updated_at) ...)` |
-| 16 | `ipc.ts:245-251` | `reader:file` 把整个 PDF 作为 Buffer 经 IPC 回传 | 大 PDF 一次性进渲染进程内存并阻塞结构化克隆。协议层已注册 `yiben://file/{id}`，直接改走协议流式加载即可 |
+| 16 | `ipc.ts:245-251` | `reader:file` 把整个 PDF 作为 Buffer 经 IPC 回传 | 大 PDF 一次性进渲染进程内存并阻塞结构化克隆。协议层已注册 `yudu://file/{id}`，直接改走协议流式加载即可 |
 | 17 | `cloud189/prefetch.ts:82,123` | `cancelPrefetch` 只置标志位，进行中的 `ensureCached` 无 AbortSignal | 取消大压缩包预取后仍占带宽和下载槽数十秒~数分钟 |
-| 18 | `main/index.ts:17-60` | `YIBEN_EVAL` / `YIBEN_SCREENSHOT` / `YIBEN_ROUTE` 等调试钩子**编译进生产包** | 任何人设置环境变量即可在渲染进程执行任意 JS。建议用 `is.dev` 门控，或打包时用 `import.meta.env` / define 剔除 |
+| 18 | `main/index.ts:17-60` | `YUDU_EVAL` / `YUDU_SCREENSHOT` / `YUDU_ROUTE` 等调试钩子**编译进生产包** | 任何人设置环境变量即可在渲染进程执行任意 JS。建议用 `is.dev` 门控，或打包时用 `import.meta.env` / define 剔除 |
 
 ---
 
@@ -103,7 +108,7 @@ const resp = await fetch(url, { signal: AbortSignal.timeout(30_000) })
 - `components/library/CoverImage.tsx:33-39` 重试 `setTimeout` 无 cleanup，虚拟滚动滑出后仍 setState。
 - `components/library/CoverGrid.tsx` `estimateSize: 262` 与实际行高（封面 3:4 + 两行标题 ≈ 290）偏差，滚动条长度不对；路由返回书架时 scrollTop 不恢复。
 - `reader/useCurrentPageObserver.ts:46-47` 每次 mutation 都 `querySelectorAll` 全量重扫，PDF 多页时近似 O(n²)。改为只 observe `addedNodes`。
-- `ReaderPage.tsx:305/361/432/230` 多处 `void window.yiben.xxx(...)` 未 `.catch`，IPC 失败会产生 unhandled rejection。
+- `ReaderPage.tsx:305/361/432/230` 多处 `void window.yudu.xxx(...)` 未 `.catch`，IPC 失败会产生 unhandled rejection。
 - `routes/CloudPage.tsx:123` `useAsync(..., [])` 未订阅 `version`，页内新增挂载后列表不刷新。
 
 **主进程**
@@ -117,17 +122,17 @@ const resp = await fetch(url, { signal: AbortSignal.timeout(30_000) })
 - `cloud189-sdk@1.0.9` → 依赖 `got@11.8.2`（该大版本已停止维护，官方现为 14.x）与冷门包 `@netdrive-sdk/log@1.0.0`。建议关注上游更新，或考虑自行实现所需少量接口以收窄供应链。
 - `electron-builder.yml` / `package.json` 均**未配置 `asarUnpack`**，而 `7zip-bin`（需执行外部二进制）、`sharp`、`better-sqlite3`（`.node` + DLL）都在 asar 内可能无法加载/执行；同时 `npmRebuild: false` 意味着原生模块不会针对 Electron ABI 重编。既然已产出 dist 说明当前版本侥幸可用，但升级 Electron 时一定会炸 —— 建议显式声明 `asarUnpack` 并打开 rebuild。
 - `package.json` 的 `dist` 脚本是 `electron-builder --win nsis`，但 `electron-builder.yml` 里配了 `nsis + portable`，README 又写「nsis + portable」—— 三者不一致。
-- 测试 65 个用例覆盖了解析、remoteZip、reader store、backoff 等核心逻辑，但**没有 DB / IPC / 端到端覆盖**。上面 P0 的 1、2 两条恰好都在无测试区域。建议补一组 DB 层测试和一次 selftest 冒烟（项目已有 `YIBEN_SELFTEST` 基础设施，很适合接进 CI）。
+- 测试 65 个用例覆盖了解析、remoteZip、reader store、backoff 等核心逻辑，但**没有 DB / IPC / 端到端覆盖**。上面 P0 的 1、2 两条恰好都在无测试区域。建议补一组 DB 层测试和一次 selftest 冒烟（项目已有 `YUDU_SELFTEST` 基础设施，很适合接进 CI）。
 
 ---
 
 ## 做对了的地方（不要动）
 
-- **`yiben://` 自定义协议取图**（`protocol.ts`）而非 IPC 传字节，配合同页并发去重（`pageInflight`）——这是本项目性能的关键，别为了「统一走 IPC」改回去。
+- **`yudu://` 自定义协议取图**（`protocol.ts`）而非 IPC 传字节，配合同页并发去重（`pageInflight`）——这是本项目性能的关键，别为了「统一走 IPC」改回去。
 - **缓存索引的串行原子落盘**（`cache.ts:64-83`）：注释里明确写了「并发请求互相覆盖 / 非原子写入导致索引重置」，已用 `flushChain` + tmp+rename 解决。这块**不需要改**，我一度以为有竞态，读完确认已处理。
 - **删除书库前先取产物清单**（`ipc.ts:109-115`）：先 `libraryArtifacts(id)` 再删行，避免级联后查不到 —— 这个顺序很容易写反。
 - **消失的系列只标记 `missing` 不硬删**（`db/index.ts:268-280`）：移动硬盘未挂载场景的正确处理。
-- **CSP**（`renderer/index.html`）：`default-src 'self'`、`img-src 'self' yiben: data:`，收敛得很好。
+- **CSP**（`renderer/index.html`）：`default-src 'self'`、`img-src 'self' yudu: data:`，收敛得很好。
 - **响应式/配置白名单**（`ipc.ts:67` `CONFIG_KEYS`）：settings 表里有加密凭据，明确拒绝渲染层读写，这个意识很到位。
 - `windowBounds` 恢复前的多显示器有效性校验（`index.ts:71-85`）：细节到位。
 

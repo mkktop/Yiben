@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { HashRouter, Routes, Route, useNavigate } from 'react-router-dom'
+import { HashRouter, Routes, Route, useNavigate, useParams } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell'
 import { ScanIndicator } from './components/ScanIndicator'
 import { CloudNoticeToast } from './components/CloudNoticeToast'
@@ -12,6 +12,7 @@ import { SettingsPage } from './routes/SettingsPage'
 import { CloudPage } from './routes/CloudPage'
 import { StatsPage } from './routes/StatsPage'
 import { useUpdateStore } from './stores/update'
+import { useDataStore } from './stores/data'
 
 /** 每次应用会话只自动恢复一次：effect 因任何原因重跑（StrictMode/HMR）都不再二次推入 */
 let resumedInSession = false
@@ -30,7 +31,7 @@ function UpdateBootstrap() {
     updateCheckedInSession = true
     void (async () => {
       try {
-        const enabled = await window.yiben.config.get('autoCheckUpdate')
+        const enabled = await window.yudu.config.get('autoCheckUpdate')
         if (enabled === false) return
         await check()
       } catch {
@@ -49,9 +50,9 @@ function LaunchResume() {
     let cancelled = false
     void (async () => {
       try {
-        const resume = await window.yiben.config.get('resumeOnLaunch')
+        const resume = await window.yudu.config.get('resumeOnLaunch')
         if (resume === false || cancelled || resumedInSession) return
-        const list = await window.yiben.home.continue()
+        const list = await window.yudu.home.continue()
         if (cancelled || resumedInSession || list.length === 0) return
         // 用户（或调试钩子）已经开始导航时不抢跳
         const hash = window.location.hash
@@ -81,13 +82,19 @@ function OpenFileBridge() {
       navigate(`/reader/${chapterId}`)
     }
     // 冷启动暂存的章节可能在组件挂载前就广播过，先领取一次再挂监听
-    void window.yiben.openFile.take().then(open)
-    return window.yiben.events.onOpenFile(({ chapterId }) => open(chapterId))
+    void window.yudu.openFile.take().then(open)
+    return window.yudu.events.onOpenFile(({ chapterId }) => open(chapterId))
   }, [navigate])
   return null
 }
 
+function ReaderRoute() {
+  const { chapterId } = useParams()
+  return <ReaderPage key={chapterId} />
+}
+
 export default function App() {
+  useEffect(() => window.yudu.events.onLibraryChanged(() => useDataStore.getState().bump()), [])
   return (
     <HashRouter>
       <LaunchResume />
@@ -102,7 +109,7 @@ export default function App() {
           <Route path="/cloud" element={<CloudPage />} />
           <Route path="/stats" element={<StatsPage />} />
         </Route>
-        <Route path="/reader/:chapterId" element={<ReaderPage />} />
+        <Route path="/reader/:chapterId" element={<ReaderRoute />} />
       </Routes>
       <ScanIndicator />
       <CloudNoticeToast />

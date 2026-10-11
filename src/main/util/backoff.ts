@@ -1,6 +1,23 @@
 /** 指数退避相关的纯工具，便于单测 */
 
-export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const abort = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+      reject(signal?.reason)
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', abort, { once: true })
+  })
+}
 
 /**
  * 第 attempt 次失败后的等待毫秒数（0 起）：5s → 15s → 45s，封顶 60s，

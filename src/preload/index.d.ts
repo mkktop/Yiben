@@ -1,7 +1,7 @@
-import type { YibenApi } from './index'
+import type { YuduApi } from './index'
 
 declare global {
   interface Window {
-    yiben: YibenApi
+    yudu: YuduApi
   }
 }

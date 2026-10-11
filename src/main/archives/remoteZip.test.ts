@@ -57,7 +57,7 @@ async function serve(
 }
 
 describe('RemoteZip（HTTP Range 直读 zip）', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'yiben-rzip-'))
+  const dir = mkdtempSync(join(tmpdir(), 'yudu-rzip-'))
   const page1 = Buffer.from('第一页内容-' + 'x'.repeat(5000))
   const page2 = Buffer.from('y'.repeat(120000) + '-第二页')
   let deflateZip: Buffer

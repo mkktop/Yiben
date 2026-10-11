@@ -3,12 +3,15 @@ import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'fs/promis
 import { createWriteStream } from 'fs'
 import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, join, relative, isAbsolute } from 'path'
 import { cloudCacheDir, cloudDownloadUrl, noteCloudError } from './client'
 import { cloud115CacheDir } from '../cloud115/client'
+import { webdavCacheRoot } from '../webdav/client'
 import { getSetting } from '../settings'
+import { cloudChapterRows } from '../db'
 import { longPath } from '../util/paths'
 import { backoffDelay, sleep } from '../util/backoff'
+import { waitWithAbort } from '../util/abort'
 
 interface CacheIndex {
   /** path → { size, at }，at 用于 LRU 淘汰 */
@@ -21,11 +24,61 @@ interface CacheIndex {
  * 非原子写入还可能让下一次读取解析失败 → 索引被重置 → 容量上限静默失效。
  */
 let indexCache: CacheIndex | null = null
+let indexLoading: Promise<CacheIndex> | null = null
 let indexDirty = false
 let flushChain: Promise<void> = Promise.resolve()
 
 /** 同一目标的并发下载共用一个 promise，避免重复下载和写同一个文件 */
 const inflight = new Map<string, Promise<string>>()
+const controllers = new Map<string, AbortController>()
+let maintenance = false
+let maintenanceChain: Promise<unknown> = Promise.resolve()
+let commitChain: Promise<unknown> = Promise.resolve()
+class CacheQuotaError extends Error {}
+export function cacheMaintenanceActive(): boolean {
+  return maintenance
+}
+
+/** 清理期间阻止新下载，并中止、等待所有在途写入后才允许删文件。 */
+export function withCacheMaintenance<T>(fn: () => Promise<T>): Promise<T> {
+  const task = maintenanceChain.then(async () => {
+    maintenance = true
+    try {
+      for (const controller of controllers.values())
+        controller.abort(new Error('下载已取消：缓存清理'))
+      await Promise.allSettled([...inflight.values()])
+      await flushChain
+      return await fn()
+    } finally {
+      maintenance = false
+    }
+  })
+  maintenanceChain = task.catch(() => {})
+  return task
+}
+
+function protectedPaths(): string[] {
+  const pinned = new Set(getSetting<number[]>('offlinePinnedSeries', []))
+  // 从当前章节归属重新计算：保护之后的增量扫描、系列合并也要覆盖新增文件。
+  return cloudChapterRows()
+    .filter((row) => pinned.has(row.seriesId))
+    .map((row) =>
+      row.kind === 'cfolder' ? join(dirname(row.path), `f-${row.chapterId}`) : row.path
+    )
+    .filter((path) =>
+      cloudCacheRoots().some((root) => {
+        const rel = relative(root, path)
+        return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+      })
+    )
+}
+
+function protectedPath(path: string, roots: string[]): boolean {
+  return roots.some((root) => {
+    const rel = relative(root, path)
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  })
+}
 
 /** 全局并发下载上限：快速翻页/预取时不会同时开几十条连接挤爆带宽（与预载前向窗口 5 页对齐） */
 const MAX_CONCURRENT_DOWNLOADS = 5
@@ -59,12 +112,17 @@ function indexPath(): string {
 
 async function loadIndex(): Promise<CacheIndex> {
   if (indexCache) return indexCache
-  try {
-    indexCache = JSON.parse(await readFile(longPath(indexPath()), 'utf-8')) as CacheIndex
-  } catch {
-    indexCache = {}
-  }
-  return indexCache
+  indexLoading ??= (async () => {
+    try {
+      indexCache = JSON.parse(await readFile(longPath(indexPath()), 'utf-8')) as CacheIndex
+    } catch {
+      indexCache = {}
+    }
+    return indexCache
+  })().finally(() => {
+    indexLoading = null
+  })
+  return indexLoading
 }
 
 /** 串行 + 原子落盘（临时文件后 rename），避免读到写了一半的 JSON */
@@ -103,9 +161,9 @@ export async function pruneIndex(): Promise<void> {
 }
 
 /** 清空整个缓存目录后调用：丢弃内存索引 */
-export function resetIndex(): void {
+export function resetIndex(): Promise<void> {
   indexCache = {}
-  void flushIndex()
+  return flushIndex()
 }
 
 /** 容量上限（MB），可由设置调整 */
@@ -113,28 +171,33 @@ function capBytes(): number {
   return getSetting<number>('cloudCacheCapMb', 20 * 1024) * 1024 * 1024
 }
 
-/** 超限时按最久未访问淘汰，直到容量达标；正在下载的目标不参与淘汰 */
+/** 超限时按最久未访问淘汰，直到容量达标；正在下载的目标不参与淘汰。
+ *  幽灵条目（磁盘上已不存在）只在确实需要淘汰时才顺带清理——本函数在每次
+ *  下载完成后都会被调用，对全量索引做同步 existsSync 扫描在大缓存时会卡主进程 */
 async function evict(index: CacheIndex, keepPath?: string): Promise<void> {
   const cap = capBytes()
-  let total = Object.values(index).reduce((sum, entry) => sum + entry.size, 0)
+  const total = Object.values(index).reduce((sum, entry) => sum + entry.size, 0)
+  if (total <= cap) return
 
-  // 先丢掉磁盘上已经没了的条目
+  // 先丢掉磁盘上已经没了的条目（虚高的记录体积可能正是超限的原因），再重新判定
+  let real = total
   for (const path of Object.keys(index)) {
     if (!existsSync(longPath(path))) {
-      total -= index[path].size
+      real -= index[path].size
       delete index[path]
     }
   }
-  if (total <= cap) return
+  if (real <= cap) return
 
+  const roots = protectedPaths()
   const entries = Object.entries(index)
-    .filter(([path]) => path !== keepPath && !inflight.has(path))
+    .filter(([path]) => path !== keepPath && !inflight.has(path) && !protectedPath(path, roots))
     .sort((a, b) => a[1].at - b[1].at)
   for (const [path, entry] of entries) {
-    if (total <= cap) break
+    if (real <= cap) break
     try {
       await rm(longPath(path), { force: true })
-      total -= entry.size
+      real -= entry.size
       delete index[path]
     } catch {
       /* ignore */
@@ -152,7 +215,9 @@ async function cachedSizeIfComplete(
     const st = await stat(longPath(destPath))
     const recorded = index[destPath]
     const complete =
-      expectedSize > 0 ? st.size === expectedSize : recorded !== undefined && recorded.size === st.size
+      expectedSize > 0
+        ? st.size === expectedSize
+        : recorded !== undefined && recorded.size === st.size
     return complete ? st.size : null
   } catch {
     return null
@@ -185,12 +250,15 @@ export async function ensureCached(
   expectedSize: number,
   onProgress?: (p: DownloadProgress) => void,
   signal?: AbortSignal,
-  resolveUrl?: (fileId: string) => Promise<string>
+  resolveUrl?: (fileId: string) => Promise<string>,
+  requestHeaders?: Record<string, string>
 ): Promise<string> {
+  if (maintenance) throw new Error('缓存正在清理，请稍后重试')
+  signal?.throwIfAborted()
   const resolve = resolveUrl ?? ((id: string) => cloudDownloadUrl(id, familyId))
   const running = inflight.get(destPath)
   if (running) {
-    if (signal) return running
+    if (signal) return waitWithAbort(running, signal)
     // 前台（无取消信号）搭车预取发起的下载：预取被取消会连带中断这次下载，
     // 阅读中的页不该跟着挂——取消类错误自行重新发起
     try {
@@ -199,8 +267,22 @@ export async function ensureCached(
       if (!isCancelledError(err)) throw err
     }
   }
-  const task = download(fileId, resolve, destPath, expectedSize, onProgress, signal).finally(() => {
+  if (maintenance) throw new Error('缓存正在清理，请稍后重试')
+  signal?.throwIfAborted()
+  const controller = new AbortController()
+  const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+  controllers.set(destPath, controller)
+  const task = download(
+    fileId,
+    resolve,
+    destPath,
+    expectedSize,
+    onProgress,
+    combined,
+    requestHeaders
+  ).finally(() => {
     inflight.delete(destPath)
+    controllers.delete(destPath)
   })
   inflight.set(destPath, task)
   return task
@@ -212,9 +294,11 @@ async function download(
   destPath: string,
   expectedSize: number,
   onProgress?: (p: DownloadProgress) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  requestHeaders?: Record<string, string>
 ): Promise<string> {
   const index = await loadIndex()
+  signal?.throwIfAborted()
   touch(index, destPath)
 
   const cached = await cachedSizeIfComplete(index, destPath, expectedSize)
@@ -231,7 +315,7 @@ async function download(
   await withDownloadSlot(async () => {
     // 瞬时失败（网络抖动/直链中途失效/空闲超时）按指数退避重试；会话失效交给 UI 引导
     for (let attempt = 0; ; attempt++) {
-      const url = await resolveUrl(fileId)
+      signal?.throwIfAborted()
       // 空闲看门狗：连接建立或读流期间持续 30s 收不到数据就中断本次尝试。
       // fetch 的 signal 在响应头返回后仍然管着 body 流，所以能覆盖整个传输过程；
       // 每收到一个 chunk 就续期，慢速但活跃的连接不会被误杀。
@@ -240,7 +324,9 @@ async function download(
       const armIdle = (): void => {
         if (idleTimer) clearTimeout(idleTimer)
         idleTimer = setTimeout(() => {
-          ctrl.abort(new Error(`云盘下载连接空闲超时（${DOWNLOAD_IDLE_TIMEOUT_MS / 1000}s 无数据）`))
+          ctrl.abort(
+            new Error(`云盘下载连接空闲超时（${DOWNLOAD_IDLE_TIMEOUT_MS / 1000}s 无数据）`)
+          )
         }, DOWNLOAD_IDLE_TIMEOUT_MS)
       }
       const onAbort = (): void => ctrl.abort(new Error('下载已取消'))
@@ -250,13 +336,17 @@ async function download(
       }
       try {
         armIdle()
-        const resp = await fetch(url, { signal: ctrl.signal })
+        const url = await waitWithAbort(resolveUrl(fileId), ctrl.signal)
+        signal?.throwIfAborted()
+        const resp = await fetch(url, {
+          signal: ctrl.signal,
+          headers: requestHeaders,
+          ...(requestHeaders ? { redirect: 'error' as const } : {})
+        })
         if (!resp.ok || !resp.body) {
           const err = new Error(`云盘下载失败：HTTP ${resp.status}`)
-          await rm(longPath(`${destPath}.part`), { force: true }).catch(() => {})
-          if (noteCloudError(err) === 'session' || attempt >= 2) throw err
-          await sleep(backoffDelay(attempt))
-          continue
+          await resp.body?.cancel()
+          throw err
         }
 
         const total = Number(resp.headers.get('content-length') ?? expectedSize ?? 0)
@@ -280,16 +370,49 @@ async function download(
           if (total > 0 && loaded !== total) {
             throw new Error(`下载不完整：${loaded}/${total} 字节`)
           }
+          if (expectedSize > 0 && loaded !== expectedSize)
+            throw new Error(`文件大小与扫描记录不符：${loaded}/${expectedSize} 字节，请重新扫描`)
           // 下载完成才改名，残缺文件不会被当作缓存命中
-          await rename(longPath(tmp), longPath(destPath))
+          signal?.throwIfAborted()
+          const commit = commitChain.then(async () => {
+            signal?.throwIfAborted()
+            const fresh = await loadIndex()
+            const roots = protectedPaths()
+            const pinnedBytes = Object.entries(fresh).reduce(
+              (sum, [path, entry]) =>
+                sum +
+                (path !== destPath && protectedPath(path, roots) && existsSync(longPath(path))
+                  ? entry.size
+                  : 0),
+              0
+            )
+            if (protectedPath(destPath, roots) && pinnedBytes + loaded > capBytes())
+              throw new CacheQuotaError('离线保护内容超过缓存容量，请提高容量或解除其他系列保护')
+            await rename(longPath(tmp), longPath(destPath))
+            fresh[destPath] = { size: loaded, at: Date.now() }
+            await evict(fresh, destPath)
+            await flushIndex()
+          })
+          commitChain = commit.catch(() => {})
+          await commit
           return
         } catch (err) {
           await rm(longPath(tmp), { force: true }).catch(() => {})
-          if (signal?.aborted) throw err
+          if (signal?.aborted || err instanceof CacheQuotaError) throw err
           if (noteCloudError(err) === 'session' || attempt >= 2) throw err
           loaded = 0
-          await sleep(backoffDelay(attempt))
+          await sleep(backoffDelay(attempt), signal)
         }
+      } catch (err) {
+        if (
+          signal?.aborted ||
+          err instanceof CacheQuotaError ||
+          noteCloudError(err) === 'session' ||
+          attempt >= 2
+        )
+          throw err
+        loaded = 0
+        await sleep(backoffDelay(attempt), signal)
       } finally {
         if (idleTimer) clearTimeout(idleTimer)
         if (signal) signal.removeEventListener('abort', onAbort)
@@ -297,18 +420,12 @@ async function download(
     }
   })
 
-  // 重新取当前索引：下载期间 clearAllCache/resetIndex 可能已换掉内存索引，
-  // 写回旧对象会产生磁盘上索引外的孤儿文件（配额统计漏算）
-  const fresh = await loadIndex()
-  fresh[destPath] = { size: loaded, at: Date.now() }
-  await evict(fresh, destPath)
-  await flushIndex()
   return destPath
 }
 
 /** 云端缓存根目录（天翼 + 115，共用一套容量上限与 LRU 索引） */
 export function cloudCacheRoots(): string[] {
-  return [cloudCacheDir(), cloud115CacheDir()]
+  return [cloudCacheDir(), cloud115CacheDir(), webdavCacheRoot()]
 }
 
 /** 启动清扫崩溃/强杀残留的半成品文件（cacheStats 与 evict 都看不见它们） */

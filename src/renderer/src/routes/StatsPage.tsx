@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 
 /** 主进程 stats:overview 的返回（与 preload 声明一致） */
 interface StatsOverview {
+  totalMinutes: number
   days: Array<{ day: string; pages: number }>
   streak: number
   totalPages: number
@@ -55,7 +56,7 @@ function StatCard({ label, value, hint, icon: Icon }: StatCardProps) {
 
 /** 阅读统计页：指标卡 + GitHub 风格年度热力图（53 周 × 7 天的纯 CSS grid） */
 export function StatsPage() {
-  const { data, error } = useAsync<StatsOverview>(() => window.yiben.stats.overview(365), [])
+  const { data, error } = useAsync<StatsOverview>(() => window.yudu.stats.overview(365), [])
 
   // 53 列（周）× 7 行（周日..周六），最后一列对齐到本周；未到来的日子留空
   const cells = useMemo(() => {
@@ -130,6 +131,9 @@ export function StatsPage() {
           </div>
 
           <Card>
+            <p className="px-5 pt-4 text-sm text-muted-foreground">
+              活跃阅读时长：{Math.round(data.totalMinutes)} 分钟（失焦、后台或一分钟无操作暂停）
+            </p>
             <CardHeader
               title={
                 <>
@@ -159,11 +163,15 @@ export function StatsPage() {
               {/* 色阶图例 */}
               <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
                 少
-                {['bg-muted', 'bg-primary/25', 'bg-primary/45', 'bg-primary/70', 'bg-gradient-to-br from-primary to-primary/85'].map(
-                  (c) => (
-                    <span key={c} className={cn('size-3 rounded-[4px]', c)} />
-                  )
-                )}
+                {[
+                  'bg-muted',
+                  'bg-primary/25',
+                  'bg-primary/45',
+                  'bg-primary/70',
+                  'bg-gradient-to-br from-primary to-primary/85'
+                ].map((c) => (
+                  <span key={c} className={cn('size-3 rounded-[4px]', c)} />
+                ))}
                 多
               </div>
             </CardBody>

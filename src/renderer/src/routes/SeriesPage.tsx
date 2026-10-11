@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   AlertTriangle,
@@ -26,6 +26,7 @@ import { Dialog } from '@/components/ui/dialog'
 import { useAsync } from '@/hooks/useAsync'
 import { useDataStore } from '@/stores/data'
 import { CoverImage } from '@/components/library/CoverImage'
+import { SeriesMaintenance } from '@/components/SeriesMaintenance'
 import { EmptyHint } from '@/components/library/CoverGrid'
 import type {
   ChapterWithProgress,
@@ -33,10 +34,13 @@ import type {
   PrefetchProgress,
   Series,
   SeriesDetail,
-  ShelfInfo
+  ShelfInfo,
+  OfflineStatus
 } from '@shared/types'
 import { parseTags } from '@shared/types'
 import { cn, errorMessage } from '@/lib/utils'
+import { createOrderedValue } from '@/lib/orderedInteraction'
+import { seriesReading } from '@/lib/seriesReading'
 
 /** LanguageISO 代码 → 展示名（仅常见几种，其余原样展示） */
 const LANG_NAMES: Record<string, string> = {
@@ -51,8 +55,10 @@ function volumeGroups(chapters: ChapterWithProgress[]): Array<{
   volume: string | null
   items: Array<{ c: ChapterWithProgress; i: number }>
 }> {
-  const groups: Array<{ volume: string | null; items: Array<{ c: ChapterWithProgress; i: number }> }> =
-    []
+  const groups: Array<{
+    volume: string | null
+    items: Array<{ c: ChapterWithProgress; i: number }>
+  }> = []
   chapters.forEach((c, i) => {
     const last = groups[groups.length - 1]
     if (last && last.volume === c.volume) last.items.push({ c, i })
@@ -62,13 +68,7 @@ function volumeGroups(chapters: ChapterWithProgress[]): Array<{
 }
 
 /** 手动编辑元数据：保存后打 meta_edited 标记，重扫不会覆盖 */
-function MetaDialog({
-  series,
-  onClose
-}: {
-  series: Series
-  onClose: () => void
-}) {
+function MetaDialog({ series, onClose }: { series: Series; onClose: () => void }) {
   const bump = useDataStore((s) => s.bump)
   const [title, setTitle] = useState(series.title)
   const [author, setAuthor] = useState(series.author ?? '')
@@ -86,7 +86,7 @@ function MetaDialog({
         .split(/[,，]/)
         .map((t) => t.trim())
         .filter(Boolean)
-      await window.yiben.series.updateMeta(series.id, {
+      await window.yudu.series.updateMeta(series.id, {
         title: title.trim() || series.title,
         author: author.trim() || null,
         status: status.trim() || null,
@@ -106,10 +106,11 @@ function MetaDialog({
     <Dialog
       title="编辑信息"
       onClose={onClose}
+      closeDisabled={busy}
       className="max-w-lg"
       footer={
         <>
-          <Button variant="ghost" size="sm" onClick={onClose}>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
             取消
           </Button>
           <Button size="sm" onClick={() => void save()} disabled={busy}>
@@ -127,7 +128,11 @@ function MetaDialog({
           <Input value={author} onChange={(e) => setAuthor(e.target.value)} />
         </Field>
         <Field label="状态">
-          <Input value={status} onChange={(e) => setStatus(e.target.value)} placeholder="连载中 / 已完结…" />
+          <Input
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            placeholder="连载中 / 已完结…"
+          />
         </Field>
         <Field label="标签（逗号分隔）">
           <Input value={tags} onChange={(e) => setTags(e.target.value)} />
@@ -166,162 +171,190 @@ function ShelfTagDialog({ series, onClose }: { series: Series; onClose: () => vo
   const [newShelf, setNewShelf] = useState('')
   const [tagInput, setTagInput] = useState('')
   const [error, setError] = useState('')
-  // 都以 version 为依赖：写库 + bump 后自动重取，界面永远反映库里的真实状态
-  const { data: shelves } = useAsync<ShelfInfo[]>(() => window.yiben.shelves.list(), [version])
-  const { data: memberIds } = useAsync<number[]>(
-    () => window.yiben.shelves.forSeries(series.id),
-    [version, series.id]
+  const [pending, setPending] = useState(0)
+  const [savedShelfIds, setSavedShelfIds] = useState<number[] | null>(null)
+  const [savedTags, setSavedTags] = useState<string[] | null>(null)
+  // 归属初值只在打开时拉取；后续由顺序写入更新，避免刷新中的旧快照覆盖新操作。
+  const { data: shelves } = useAsync<ShelfInfo[]>(() => window.yudu.shelves.list(), [version])
+  const { data: memberIds, error: shelfError } = useAsync<number[]>(
+    () => window.yudu.shelves.forSeries(series.id),
+    [series.id]
   )
-  const { data: memberTags } = useAsync<string[]>(
-    () => window.yiben.tags.forSeries(series.id),
-    [version, series.id]
+  const { data: memberTags, error: tagError } = useAsync<string[]>(
+    () => window.yudu.tags.forSeries(series.id),
+    [series.id]
   )
+  const shelfWrites = useMemo(() => memberIds && createOrderedValue(memberIds), [memberIds])
+  const tagWrites = useMemo(() => memberTags && createOrderedValue(memberTags), [memberTags])
 
-  const member = new Set(memberIds ?? [])
+  const member = new Set(savedShelfIds ?? memberIds ?? [])
+  const tags = savedTags ?? memberTags ?? []
   const run = async (fn: () => Promise<unknown>): Promise<void> => {
+    setPending((count) => count + 1)
     setError('')
     try {
       await fn()
       bump()
     } catch (e) {
       setError(errorMessage(e))
+    } finally {
+      setPending((count) => count - 1)
     }
   }
 
   const toggleShelf = (id: number): void => {
-    const next = member.has(id) ? [...member].filter((x) => x !== id) : [...member, id]
-    void run(() => window.yiben.shelves.setForSeries(series.id, next))
+    if (!shelfWrites) return
+    void run(async () => {
+      const next = await shelfWrites.update(
+        (ids) => ids.includes(id) ? ids.filter((entry) => entry !== id) : [...ids, id],
+        (ids) => window.yudu.shelves.setForSeries(series.id, ids)
+      )
+      setSavedShelfIds(next)
+    })
   }
 
   const createShelfAndJoin = (): void => {
     const name = newShelf.trim()
-    if (!name) return
+    if (!name || !shelfWrites) return
     void run(async () => {
-      const shelf = await window.yiben.shelves.create(name)
-      await window.yiben.shelves.setForSeries(series.id, [...member, shelf.id])
-      setNewShelf('')
+      const shelf = await window.yudu.shelves.create(name)
+      const next = await shelfWrites.update(
+        (ids) => [...new Set([...ids, shelf.id])],
+        (ids) => window.yudu.shelves.setForSeries(series.id, ids)
+      )
+      setSavedShelfIds(next)
+      setNewShelf((current) => current.trim() === name ? '' : current)
     })
   }
 
   const addTag = (): void => {
     const name = tagInput.trim()
-    if (!name) return
+    if (!name || !tagWrites) return
     void run(async () => {
-      await window.yiben.tags.setForSeries(series.id, [...(memberTags ?? []), name])
-      setTagInput('')
+      const next = await tagWrites.update(
+        (entries) => [...new Set([...entries, name])],
+        (entries) => window.yudu.tags.setForSeries(series.id, entries)
+      )
+      setSavedTags(next)
+      setTagInput((current) => current.trim() === name ? '' : current)
     })
   }
 
   const removeTag = (name: string): void => {
-    void run(() =>
-      window.yiben.tags.setForSeries(
-        series.id,
-        (memberTags ?? []).filter((t) => t !== name)
+    if (!tagWrites) return
+    void run(async () => {
+      const next = await tagWrites.update(
+        (entries) => entries.filter((tag) => tag !== name),
+        (entries) => window.yudu.tags.setForSeries(series.id, entries)
       )
-    )
+      setSavedTags(next)
+    })
   }
 
   return (
     <Dialog
       title="书架与标签"
       onClose={onClose}
+      closeDisabled={pending > 0}
       footer={
-        <Button size="sm" variant="outline" onClick={onClose}>
+        <Button size="sm" variant="outline" onClick={onClose} disabled={pending > 0}>
           完成
         </Button>
       }
     >
       <div className="max-h-[60vh] space-y-5 overflow-y-auto p-5">
-          <section>
-            <p className="mb-2 text-xs text-muted-foreground">虚拟书架（可归入多个）</p>
-            <div className="flex flex-wrap gap-2">
-              {(shelves ?? []).map((s) => (
+        <section>
+          <p className="mb-2 text-xs text-muted-foreground">虚拟书架（可归入多个）</p>
+          <div className="flex flex-wrap gap-2">
+            {(shelves ?? []).map((s) => (
+              <button
+                key={s.id}
+                onClick={() => toggleShelf(s.id)}
+                disabled={!shelfWrites}
+                className={cn(
+                  'flex items-center gap-1 rounded-full px-3 py-1.5 text-xs transition-colors',
+                  member.has(s.id)
+                    ? 'bg-primary font-medium text-primary-foreground'
+                    : 'bg-muted text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {member.has(s.id) && <CheckCircle2 className="size-3" />}
+                {s.name}
+              </button>
+            ))}
+            {(shelves ?? []).length === 0 && (
+              <p className="text-xs text-muted-foreground">还没有书架，在下面创建一个</p>
+            )}
+          </div>
+          <div className="mt-3 flex gap-2">
+            <Input
+              value={newShelf}
+              onChange={(e) => setNewShelf(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && createShelfAndJoin()}
+              placeholder="新建书架，如「追更中」"
+              className="h-8 text-xs"
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 shrink-0 px-2.5"
+              disabled={!newShelf.trim() || !shelfWrites}
+              onClick={createShelfAndJoin}
+            >
+              <Plus className="size-3.5" />
+              新建并归入
+            </Button>
+          </div>
+        </section>
+
+        <section>
+          <p className="mb-2 text-xs text-muted-foreground">
+            自定义标签（与 ComicInfo 元数据标签相互独立）
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {tags.map((t) => (
+              <span
+                key={t}
+                className="flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 text-xs text-primary"
+              >
+                {t}
                 <button
-                  key={s.id}
-                  onClick={() => toggleShelf(s.id)}
-                  className={cn(
-                    'flex items-center gap-1 rounded-full px-3 py-1.5 text-xs transition-colors',
-                    member.has(s.id)
-                      ? 'bg-primary font-medium text-primary-foreground'
-                      : 'bg-muted text-muted-foreground hover:text-foreground'
-                  )}
+                  onClick={() => removeTag(t)}
+                  className="grid size-4 place-items-center rounded-full hover:bg-primary/20"
+                  title="删除标签"
                 >
-                  {member.has(s.id) && <CheckCircle2 className="size-3" />}
-                  {s.name}
+                  <X className="size-3" />
                 </button>
-              ))}
-              {(shelves ?? []).length === 0 && (
-                <p className="text-xs text-muted-foreground">还没有书架，在下面创建一个</p>
-              )}
-            </div>
-            <div className="mt-3 flex gap-2">
-              <Input
-                value={newShelf}
-                onChange={(e) => setNewShelf(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && createShelfAndJoin()}
-                placeholder="新建书架，如「追更中」"
-                className="h-8 text-xs"
-              />
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-8 shrink-0 px-2.5"
-                disabled={!newShelf.trim()}
-                onClick={createShelfAndJoin}
-              >
-                <Plus className="size-3.5" />
-                新建并归入
-              </Button>
-            </div>
-          </section>
+              </span>
+            ))}
+            {tags.length === 0 && (
+              <p className="text-xs text-muted-foreground">还没有标签</p>
+            )}
+          </div>
+          <div className="mt-3 flex gap-2">
+            <Input
+              value={tagInput}
+              onChange={(e) => setTagInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && addTag()}
+              placeholder="输入标签，回车添加"
+              className="h-8 text-xs"
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 shrink-0 px-2.5"
+              disabled={!tagInput.trim() || !tagWrites}
+              onClick={addTag}
+            >
+              <Plus className="size-3.5" />
+              添加
+            </Button>
+          </div>
+        </section>
 
-          <section>
-            <p className="mb-2 text-xs text-muted-foreground">
-              自定义标签（与 ComicInfo 元数据标签相互独立）
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {(memberTags ?? []).map((t) => (
-                <span
-                  key={t}
-                  className="flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 text-xs text-primary"
-                >
-                  {t}
-                  <button
-                    onClick={() => removeTag(t)}
-                    className="grid size-4 place-items-center rounded-full hover:bg-primary/20"
-                    title="删除标签"
-                  >
-                    <X className="size-3" />
-                  </button>
-                </span>
-              ))}
-              {(memberTags ?? []).length === 0 && (
-                <p className="text-xs text-muted-foreground">还没有标签</p>
-              )}
-            </div>
-            <div className="mt-3 flex gap-2">
-              <Input
-                value={tagInput}
-                onChange={(e) => setTagInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addTag()}
-                placeholder="输入标签，回车添加"
-                className="h-8 text-xs"
-              />
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-8 shrink-0 px-2.5"
-                disabled={!tagInput.trim()}
-                onClick={addTag}
-              >
-                <Plus className="size-3.5" />
-                添加
-              </Button>
-            </div>
-          </section>
-
-          {error && <p className="text-xs text-destructive">{error}</p>}
-        </div>
+        {pending > 0 && <p role="status" className="text-xs text-muted-foreground">正在保存更改…</p>}
+        {(error || shelfError || tagError) && <p className="text-xs text-destructive">{error || shelfError || tagError}</p>}
+      </div>
     </Dialog>
   )
 }
@@ -338,11 +371,16 @@ function PrefetchButton({
   className?: string
 }) {
   const [progress, setProgress] = useState<PrefetchProgress | null>(null)
+  const [offline, setOffline] = useState<OfflineStatus | null>(null)
   const [error, setError] = useState('')
 
   // 挂载时对账：若预取已在别的页面启动，进度条照样显示
   useEffect(() => {
-    void window.yiben.cloud
+    void window.yudu.offline
+      .status(seriesId)
+      .then(setOffline)
+      .catch((error) => setError(errorMessage(error)))
+    void window.yudu.cloud
       .prefetchRunning()
       .then((running) => {
         if (running.includes(seriesId)) {
@@ -353,13 +391,16 @@ function PrefetchButton({
   }, [seriesId, total])
 
   useEffect(() => {
-    const offProgress = window.yiben.events.onPrefetchProgress((p) => {
+    const offProgress = window.yudu.events.onPrefetchProgress((p) => {
       if (p.seriesId === seriesId) setProgress(p)
     })
-    const offDone = window.yiben.events.onPrefetchDone((p: PrefetchDone) => {
+    const offDone = window.yudu.events.onPrefetchDone((p: PrefetchDone) => {
       if (p.seriesId !== seriesId) return
       setProgress(null)
+      if (p.offline) setOffline(p.offline)
       if (p.error) setError(p.error)
+      else if (p.failed?.length || (p.offline && p.offline.complete < p.offline.total))
+        setError(`部分内容未缓存：${(p.offline?.missing ?? p.failed ?? []).join('、')}`)
     })
     return () => {
       offProgress()
@@ -374,7 +415,7 @@ function PrefetchButton({
         size="sm"
         variant="outline"
         className={className}
-        onClick={() => void window.yiben.cloud.prefetchCancel(seriesId)}
+        onClick={() => void window.yudu.cloud.prefetchCancel(seriesId)}
         title="点击取消"
       >
         <Download className="animate-pulse" />
@@ -389,19 +430,41 @@ function PrefetchButton({
   }
 
   return (
-    <Button
-      size="sm"
-      variant="outline"
-      className={className}
-      title={error || '把整部漫画提前下载到本地，断网也能看'}
-      onClick={() => {
-        setError('')
-        void window.yiben.cloud.prefetch(seriesId).catch((e) => setError(errorMessage(e)))
-      }}
-    >
-      <CloudDownload />
-      离线缓存
-    </Button>
+    <div className="flex flex-wrap items-center gap-2">
+      <Button
+        size="sm"
+        variant="outline"
+        className={className}
+        title={error || '把整部漫画提前下载到本地，断网也能看'}
+        onClick={() => {
+          setError('')
+          void window.yudu.cloud.prefetch(seriesId).catch((e) => setError(errorMessage(e)))
+        }}
+      >
+        <CloudDownload />
+        {offline && offline.total > 0 && offline.complete === offline.total
+          ? '已全部离线'
+          : offline
+            ? `离线缓存 ${offline.complete}/${offline.total}`
+            : '离线缓存'}
+      </Button>
+      {offline?.pinned && (
+        <Button
+          size="sm"
+          variant="outline"
+          className={className}
+          onClick={() =>
+            void window.yudu.offline
+              .pin(seriesId, false)
+              .then(setOffline)
+              .catch((error) => setError(errorMessage(error)))
+          }
+        >
+          解除保护
+        </Button>
+      )}
+      {error && <p className="max-w-md text-xs text-destructive">{error}</p>}
+    </div>
   )
 }
 
@@ -410,22 +473,24 @@ export function SeriesPage() {
   const navigate = useNavigate()
   const version = useDataStore((s) => s.version)
   const bump = useDataStore((s) => s.bump)
-  const { data, error } = useAsync(() => window.yiben.series.get(Number(id)), [id, version])
+  const { data, error } = useAsync(() => window.yudu.series.get(Number(id)), [id, version])
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [removeError, setRemoveError] = useState('')
   const [actionError, setActionError] = useState('')
   const [editing, setEditing] = useState(false)
   const [organizing, setOrganizing] = useState(false)
   const [rescanning, setRescanning] = useState(false)
+  const [confirmReset, setConfirmReset] = useState(false)
+  const [resetting, setResetting] = useState(false)
 
   // 归属信息（弹层里改完 bump 后这里跟着刷新）；放在提前 return 之前保证 hooks 顺序
   const seriesId = Number(id) || 0
   const { data: myShelfIds } = useAsync<number[]>(
-    () => window.yiben.shelves.forSeries(seriesId),
+    () => window.yudu.shelves.forSeries(seriesId),
     [seriesId, version]
   )
   const { data: myTags } = useAsync<string[]>(
-    () => window.yiben.tags.forSeries(seriesId),
+    () => window.yudu.tags.forSeries(seriesId),
     [seriesId, version]
   )
 
@@ -433,8 +498,19 @@ export function SeriesPage() {
     return <EmptyHint>加载失败：{error}</EmptyHint>
   }
 
-  if (!id || !data) {
+  if (!id || data === undefined) {
     return <EmptyHint>加载中…</EmptyHint>
+  }
+
+  if (data === null) {
+    return (
+      <EmptyHint
+        hint="这个系列可能已随书库删除，请返回书架查看。"
+        action={{ label: '返回书架', onClick: () => navigate('/library') }}
+      >
+        系列不存在
+      </EmptyHint>
+    )
   }
 
   const detail = data as SeriesDetail
@@ -443,8 +519,7 @@ export function SeriesPage() {
 
   const totalChapters = chapters.length
   const readChapters = chapters.filter((c) => c.completed === 1).length
-  const nextChapter =
-    chapters.find((c) => c.completed !== 1) ?? chapters[chapters.length - 1] ?? null
+  const { chapter: nextChapter, started } = seriesReading(chapters)
   const isCloud = detail.libraryKind !== 'local'
 
   const run = async (fn: () => Promise<unknown>): Promise<void> => {
@@ -460,7 +535,7 @@ export function SeriesPage() {
   const removeFromShelf = async (): Promise<void> => {
     setRemoveError('')
     try {
-      await window.yiben.series.remove(series.id)
+      await window.yudu.series.remove(series.id)
       bump()
       navigate('/library')
     } catch (e) {
@@ -470,198 +545,111 @@ export function SeriesPage() {
 
   const rescanSeries = async (): Promise<void> => {
     setRescanning(true)
-    await run(() => window.yiben.series.rescan(series.id))
+    await run(() => window.yudu.series.rescan(series.id))
     setRescanning(false)
   }
 
+  const resetProgress = async (): Promise<void> => {
+    setResetting(true)
+    setActionError('')
+    try {
+      await window.yudu.series.resetProgress(series.id)
+      bump()
+      setConfirmReset(false)
+    } catch (error) {
+      setActionError(errorMessage(error))
+    } finally {
+      setResetting(false)
+    }
+  }
+
   return (
-    <div className="relative h-full">
-      {/* 横幅背景：封面模糊放大 + 深色渐变遮罩（深浅主题都压暗，白字可读；
-          遮罩在 68% 高度内保持较实，只在尾部快速过渡回页面背景 */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-[28rem] overflow-hidden">
-        <CoverImage
-          seriesId={series.id}
-          title=""
-          className="size-full scale-125 object-cover blur-3xl"
-          fallback={<></>}
-        />
-        <div className="absolute inset-0 bg-[linear-gradient(to_bottom,rgba(0,0,0,0.62),rgba(0,0,0,0.52)_68%,var(--background))]" />
-      </div>
+    <div className="mx-auto min-w-0 max-w-[1400px] space-y-6 p-6 lg:p-8" data-series-page>
+      <Button variant="ghost" size="sm" onClick={() => navigate(-1)} className="-ml-2 text-muted-foreground">
+        <ArrowLeft />
+        返回
+      </Button>
 
-      <div className="relative mx-auto max-w-[1400px] p-8">
-        <div className="mb-6 flex items-center justify-between">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => navigate(-1)}
-            className="-ml-2 text-white/80 hover:bg-white/15 hover:text-white"
-          >
-            <ArrowLeft />
-            返回
-          </Button>
-          <div className="flex items-center gap-1.5">
-            {(removeError || actionError) && (
-              <span className="mr-1 text-xs text-red-300">{removeError || actionError}</span>
-            )}
-            <Button
-              size="sm"
-              variant="ghost"
-              className="text-white/80 hover:bg-white/15 hover:text-white"
-              title="编辑书名/作者/标签/简介（重扫不会覆盖）"
-              onClick={() => setEditing(true)}
-            >
-              <Pencil />
-              编辑信息
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="text-white/80 hover:bg-white/15 hover:text-white"
-              title="归入虚拟书架、打自定义标签"
-              onClick={() => setOrganizing(true)}
-            >
-              <FolderInput />
-              书架与标签
-              {(myShelfIds?.length ?? 0) + (myTags?.length ?? 0) > 0 && (
-                <span className="text-xs text-white/50">
-                  {(myShelfIds?.length ?? 0) + (myTags?.length ?? 0)}
-                </span>
-              )}
-            </Button>
-            {!isCloud && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-white/80 hover:bg-white/15 hover:text-white"
-                disabled={rescanning}
-                title="重新扫描这一系列（目录有变动时用）"
-                onClick={() => void rescanSeries()}
-              >
-                <RefreshCw className={cn(rescanning && 'animate-spin')} />
-                重扫
-              </Button>
-            )}
-            <Button
-              size="sm"
-              variant="ghost"
-              className="text-white/80 hover:bg-white/15 hover:text-white"
-              title="把全部章节标记为已读"
-              onClick={() => void run(() => window.yiben.series.markRead(series.id, true))}
-            >
-              <CheckCheck />
-              全部已读
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="text-white/60 hover:bg-white/15 hover:text-white"
-              title="清空这个系列的阅读进度"
-              onClick={() => void run(() => window.yiben.series.resetProgress(series.id))}
-            >
-              <RotateCcw />
-              重置进度
-            </Button>
-            {isCloud && (
-              <PrefetchButton
-                seriesId={series.id}
-                total={totalChapters}
-                className="border-white/25 bg-white/10 text-white hover:bg-white/20 hover:text-white"
-              />
-            )}
-            {confirmRemove ? (
-              <>
-                <span className="text-xs text-white/70">移出后重扫不会恢复，进度保留</span>
-                <Button size="sm" variant="destructive" onClick={() => void removeFromShelf()}>
-                  <Trash2 />
-                  确认移出
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-white/80 hover:bg-white/15 hover:text-white"
-                  onClick={() => setConfirmRemove(false)}
-                >
-                  取消
-                </Button>
-              </>
-            ) : (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-white/60 hover:bg-white/15 hover:text-white"
-                onClick={() => setConfirmRemove(true)}
-              >
-                <Trash2 />
-                移出书架
-              </Button>
-            )}
-          </div>
-        </div>
-
-        <div className="flex gap-7">
+      {/* 首屏优先展示作品和阅读动作，维护入口放到下方信息区域。 */}
+      <section className="relative overflow-hidden rounded-2xl border border-border/70 bg-card p-6 shadow-sm" data-series-hero>
+        <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden opacity-10">
           <CoverImage
             seriesId={series.id}
-            title={series.title}
-            className="w-44 shrink-0 rounded-xl object-cover shadow-lg ring-1 ring-white/20"
-            fallback={
-              <div className="grid aspect-[3/4] w-44 shrink-0 place-items-center rounded-xl bg-muted">
-                <BookOpen className="size-8 text-muted-foreground/50" />
-              </div>
-            }
+            title=""
+            className="size-full scale-125 object-cover blur-3xl"
+            fallback={<></>}
           />
-          <div className="min-w-0 flex-1 pt-1">
-            <h1 className="font-serif text-3xl font-semibold text-white">{series.title}</h1>
-            {series.author && (
-              <p className="mt-2 text-sm text-white/70">{series.author}</p>
-            )}
-            {tags.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {tags.map((t) => (
-                  <span
-                    key={t}
-                    className="rounded-full bg-white/15 px-2.5 py-1 text-xs text-white/85"
-                  >
-                    {t}
-                  </span>
-                ))}
+          <div className="absolute inset-0 bg-gradient-to-r from-transparent to-card" />
+        </div>
+        <div className="relative flex items-start gap-6">
+          <div className="w-36 shrink-0 sm:w-40">
+            <CoverImage
+              seriesId={series.id}
+              title={series.title}
+              loading="eager"
+              className="aspect-[3/4] w-full rounded-xl object-cover shadow-lg ring-1 ring-foreground/10"
+              fallback={
+                <div className="grid aspect-[3/4] w-full place-items-center rounded-xl bg-muted">
+                  <BookOpen className="size-8 text-muted-foreground/50" />
+                </div>
+              }
+            />
+          </div>
+          <div className="min-w-0 flex-1 py-1">
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span>漫画系列</span>
+              {series.status && (
+                <span className="rounded-full border border-primary/20 bg-primary/10 px-2.5 py-0.5 font-medium text-primary">
+                  {series.status}
+                </span>
+              )}
+            </div>
+            <h1 className="break-words font-serif text-2xl leading-tight font-semibold text-foreground lg:text-3xl">
+              {series.title}
+            </h1>
+            <p className="mt-2 break-words text-sm text-muted-foreground">{series.author || '作者暂无信息'}</p>
+
+            <div className="mt-5 max-w-sm" data-series-progress>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs tabular-nums text-muted-foreground">
+                <span>已读 {readChapters} / {totalChapters} 话</span>
+                <span>{totalChapters > 0 ? Math.round((readChapters / totalChapters) * 100) : 0}%</span>
               </div>
-            )}
-            {/* 自定义标签：与上面的元数据标签是两套体系，用主色区分显示 */}
-            {(myTags?.length ?? 0) > 0 && (
-              <div className="mt-2 flex flex-wrap gap-2">
-                {myTags!.map((t) => (
-                  <span
-                    key={t}
-                    className="rounded-full bg-primary/25 px-2.5 py-1 text-xs text-primary"
-                  >
-                    {t}
-                  </span>
-                ))}
+              <div
+                role="progressbar"
+                aria-label="系列阅读进度"
+                aria-valuemin={0}
+                aria-valuemax={totalChapters || 1}
+                aria-valuenow={readChapters}
+                aria-valuetext={'共 ' + totalChapters + ' 话，已读 ' + readChapters + ' 话'}
+                className="h-1.5 overflow-hidden rounded-full bg-muted"
+              >
+                <div className="h-full rounded-full bg-primary" style={{ width: (totalChapters > 0 ? (readChapters / totalChapters) * 100 : 0) + '%' }} />
               </div>
-            )}
-            <p className="mt-3 text-xs tabular-nums text-white/65">
-              共 {totalChapters} 话 · 已读 {readChapters}
-              {series.year ? ` · ${series.year}` : ''}
-              {series.language ? ` · ${LANG_NAMES[series.language] ?? series.language}` : ''}
-              {series.status ? ` · ${series.status}` : ''}
-            </p>
+            </div>
+
             {nextChapter && (
-              <Button className="mt-5 shadow-lg" onClick={() => navigate(`/reader/${nextChapter.id}`)}>
-                {readChapters > 0 ? <PlayCircle /> : <BookOpen />}
-                {readChapters > 0 ? '继续阅读' : '开始阅读'}
-                {readChapters > 0 && nextChapter ? ` · ${nextChapter.title}` : ''}
-              </Button>
+              <div className="mt-5 flex min-w-0 flex-wrap items-center gap-3">
+                <Button className="h-10 px-5" onClick={() => navigate('/reader/' + nextChapter.id)} data-series-read>
+                  {started ? <PlayCircle /> : <BookOpen />}
+                  {started ? '继续阅读' : '开始阅读'}
+                </Button>
+                <span className="min-w-0 max-w-full truncate text-xs text-muted-foreground" title={nextChapter.title}>
+                  {nextChapter.title}
+                </span>
+              </div>
             )}
           </div>
         </div>
+      </section>
 
-        {series.description && (
-          <p className="mt-6 max-w-3xl text-sm leading-relaxed text-white/75">
-            {series.description}
-          </p>
-        )}
+      {(removeError || actionError) && (
+        <p role="status" className="break-words rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+          {removeError || actionError}
+        </p>
+      )}
 
-        <Card className="mt-8">
+      <div className="grid min-w-0 grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_20rem]" data-series-content>
+        <Card className="min-w-0">
           <CardHeader
             title="章节列表"
             action={
@@ -691,14 +679,21 @@ export function SeriesPage() {
                       role="button"
                       tabIndex={0}
                       onClick={() => navigate(`/reader/${c.id}`)}
-                      onKeyDown={(e) => e.key === 'Enter' && navigate(`/reader/${c.id}`)}
-                      className="flex w-full cursor-pointer items-center gap-4 rounded-lg px-3 py-3 text-left transition-colors hover:bg-accent/60"
+                      onKeyDown={(e) => {
+                        // 已读勾选按钮有独立动作，不能让它的回车冒泡成打开章节。
+                        if (e.target !== e.currentTarget) return
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          navigate(`/reader/${c.id}`)
+                        }
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-4 rounded-lg px-3 py-3 text-left transition-colors hover:bg-accent/60 focus-visible:outline-2 focus-visible:outline-ring"
                     >
                       <span className="w-10 shrink-0 text-center text-xs tabular-nums text-muted-foreground">
                         {c.number ?? i + 1}
                       </span>
                       <span className="min-w-0 flex-1 truncate text-sm">{c.title}</span>
-                      {c.scan_error ? (
+                      {c.scan_error && c.kind !== 'pdf' ? (
                         // 损坏的压缩包等：悬浮显示扫描失败原因，每轮扫描会自动重试
                         <span
                           className="flex shrink-0 items-center gap-1 text-xs text-destructive"
@@ -739,7 +734,7 @@ export function SeriesPage() {
                         title={done ? '标记为未读' : '标记为已读'}
                         onClick={(e) => {
                           e.stopPropagation()
-                          void run(() => window.yiben.progress.setCompleted(c.id, !done))
+                          void run(() => window.yudu.progress.setCompleted(c.id, !done))
                         }}
                       >
                         {done ? (
@@ -755,11 +750,158 @@ export function SeriesPage() {
             ))}
           </CardBody>
         </Card>
+
+        <aside className="min-w-0 space-y-5" aria-label="作品信息与管理">
+          <Card>
+            <CardHeader title="作品信息" />
+            <CardBody className="space-y-4">
+              <div className="flex flex-wrap gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  title="编辑书名/作者/标签/简介（重扫不会覆盖）"
+                  onClick={() => setEditing(true)}
+                >
+                  <Pencil />
+                  编辑信息
+                </Button>
+                <SeriesMaintenance series={series} local={!isCloud} entry="metadata" />
+              </div>
+              {(series.year || series.language) && (
+                <dl className="grid grid-cols-2 gap-3 text-xs">
+                  {series.year && <div><dt className="text-muted-foreground">年份</dt><dd className="mt-1">{series.year}</dd></div>}
+                  {series.language && <div><dt className="text-muted-foreground">语言</dt><dd className="mt-1 break-words">{LANG_NAMES[series.language] ?? series.language}</dd></div>}
+                </dl>
+              )}
+              {series.description ? (
+                <p className="break-words whitespace-pre-line text-sm leading-relaxed text-muted-foreground">{series.description}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">暂无简介，可通过编辑信息或在线元数据补充。</p>
+              )}
+              {tags.length > 0 && (
+                <div>
+                  <p className="mb-2 text-xs text-muted-foreground">作品标签</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {tags.map((tag) => <span key={tag} className="max-w-full break-words rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">{tag}</span>)}
+                  </div>
+                </div>
+              )}
+              <div className="space-y-3 border-t border-border/60 pt-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-muted-foreground">已归入 {myShelfIds?.length ?? 0} 个书架</p>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 px-2 text-muted-foreground"
+                    title="归入虚拟书架、打自定义标签"
+                    onClick={() => setOrganizing(true)}
+                  >
+                    <FolderInput />
+                    书架与标签
+                    {(myShelfIds?.length ?? 0) + (myTags?.length ?? 0) > 0 && (
+                      <span className="text-xs text-muted-foreground">{(myShelfIds?.length ?? 0) + (myTags?.length ?? 0)}</span>
+                    )}
+                  </Button>
+                </div>
+                {(myTags?.length ?? 0) > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {myTags!.map((tag) => <span key={tag} className="max-w-full break-words rounded-md bg-primary/10 px-2 py-1 text-xs text-primary">{tag}</span>)}
+                  </div>
+                )}
+              </div>
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader title="系列管理" />
+            <CardBody className="space-y-4">
+              <div className="flex flex-wrap gap-1.5">
+                {!isCloud && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={rescanning}
+                    title="重新扫描这一系列（目录有变动时用）"
+                    onClick={() => void rescanSeries()}
+                  >
+                    <RefreshCw className={cn(rescanning && 'animate-spin')} />
+                    重扫
+                  </Button>
+                )}
+                <SeriesMaintenance series={series} local={!isCloud} entry="merge" />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  title="把全部章节标记为已读"
+                  onClick={() => void run(() => window.yudu.series.markRead(series.id, true))}
+                >
+                  <CheckCheck />
+                  全部已读
+                </Button>
+              </div>
+              {isCloud && <PrefetchButton seriesId={series.id} total={totalChapters} />}
+              <div className="space-y-3 border-t border-border/60 pt-4">
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-muted-foreground hover:text-destructive"
+                    title="清空这个系列的阅读进度"
+                    onClick={() => setConfirmReset(true)}
+                  >
+                    <RotateCcw />
+                    重置进度
+                  </Button>
+                  {!confirmRemove && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-muted-foreground hover:text-destructive"
+                      onClick={() => setConfirmRemove(true)}
+                    >
+                      <Trash2 />
+                      移出书架
+                    </Button>
+                  )}
+                </div>
+                {confirmRemove && (
+                  <div className="space-y-2 rounded-lg border border-destructive/20 bg-destructive/5 p-3">
+                    <p className="text-xs leading-relaxed text-muted-foreground">移出后重扫不会恢复，进度保留</p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="destructive" onClick={() => void removeFromShelf()}><Trash2 />确认移出</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setConfirmRemove(false)}>取消</Button>
+                    </div>
+                  </div>
+                )}
+                <p className="text-xs leading-relaxed text-muted-foreground">管理操作不修改漫画原文件。</p>
+              </div>
+            </CardBody>
+          </Card>
+        </aside>
       </div>
 
-      {editing && <MetaDialog series={series} onClose={() => setEditing(false)} />}
-      {organizing && <ShelfTagDialog series={series} onClose={() => setOrganizing(false)} />}
+      {editing && <MetaDialog key={series.id} series={series} onClose={() => setEditing(false)} />}
+      {organizing && <ShelfTagDialog key={series.id} series={series} onClose={() => setOrganizing(false)} />}
+      {confirmReset && (
+        <Dialog
+          title="重置阅读进度"
+          onClose={() => setConfirmReset(false)}
+          closeDisabled={resetting}
+          footer={<>
+            <Button variant="ghost" size="sm" disabled={resetting} onClick={() => setConfirmReset(false)}>取消</Button>
+            <Button variant="destructive" size="sm" disabled={resetting} onClick={() => void resetProgress()}>
+              {resetting && <Loader2 className="animate-spin" />}
+              确认重置进度
+            </Button>
+          </>}
+        >
+          <div className="space-y-3 p-5 text-sm">
+            <p>将清空「{series.title}」全部 {totalChapters} 话的阅读页码和已读状态，无法直接撤销。</p>
+            <p className="text-xs text-muted-foreground">书签、阅读统计及漫画文件保留。</p>
+            {actionError && <p className="text-xs text-destructive">{actionError}</p>}
+          </div>
+        </Dialog>
+      )}
     </div>
   )
 }
-

@@ -1,4 +1,3 @@
-import { existsSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { join } from 'path'
 import { getChapter, getChapterPageFile, updateChapterPageCount } from '../db'
@@ -8,7 +7,8 @@ import { RangeUnsupportedError } from '../archives/remoteZip'
 import { getRemoteZip, dropRemoteZip } from '../cloud189/remoteZipManager'
 import { ensureCached } from '../cloud189/cache'
 import { broadcast } from '../events'
-import { archiveKindOf, longPath, sanitizeFileName } from '../util/paths'
+import { archiveKindOf, sanitizeFileName } from '../util/paths'
+import { isCompleteFile } from '../util/cachedFile'
 import { cloud115CacheDir, cloud115DownloadUrl } from './client'
 import type { EnsureResult } from '../cloud189/ensure'
 
@@ -46,7 +46,7 @@ export async function ensure115ChapterPage(
 
   if (ch.cloud_file_id) {
     const pickcode = ch.cloud_file_id
-    if (!existsSync(longPath(ch.path))) {
+    if (!(await isCompleteFile(ch.path, ch.size))) {
       // 云端 zip：探测 Range 直读，失败（不支持/目录解析不出）回退整包下载
       if (archiveKindOf(ch.path) === 'zip') {
         try {
@@ -84,7 +84,7 @@ export async function ensure115ChapterPage(
 export async function ensure115LocalPath(chapterId: number, signal?: AbortSignal): Promise<string> {
   const ch = getChapter(chapterId)
   if (!ch) throw new Error(`章节不存在：${chapterId}`)
-  if (existsSync(longPath(ch.path))) return ch.path
+  if (await isCompleteFile(ch.path, ch.size)) return ch.path
   if (ch.cloud_file_id) {
     const pickcode = ch.cloud_file_id
     await ensureCached(pickcode, undefined, ch.path, ch.size, undefined, signal, (id) =>

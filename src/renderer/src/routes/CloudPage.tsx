@@ -18,7 +18,10 @@ import { Card, CardBody, CardHeader } from '@/components/ui/card'
 import { useAsync } from '@/hooks/useAsync'
 import { useDataStore } from '@/stores/data'
 import { cn, errorMessage } from '@/lib/utils'
+import { createDirectoryNavigation } from '@/lib/orderedInteraction'
+import { createQrLogin, type QrApi, type QrState } from '@/lib/qrLogin'
 import type { CloudBrowseResult, CloudStatus, Series } from '@shared/types'
+import { WebDavSection } from '@/components/WebDavSection'
 
 /** 挂载目录（libraries 表里的云端库） */
 interface MountRow {
@@ -35,7 +38,7 @@ interface Family {
   name: string
 }
 
-type QrState = 'waiting' | 'scanned' | 'done' | 'expired'
+type DirectoryPath = Array<{ id: string; name: string }>
 
 /**
  * 多网盘 provider 注册表。接新网盘时在主进程实现对应 client/scanner 后，
@@ -44,6 +47,7 @@ type QrState = 'waiting' | 'scanned' | 'done' | 'expired'
 const PROVIDERS = [
   { id: 'cloud189', name: '天翼云盘', desc: '个人云与家庭云', available: true },
   { id: '115', name: '115 网盘', desc: '个人云盘', available: true },
+  { id: 'webdav', name: 'WebDAV / NAS', desc: '自建服务与局域网书库', available: true },
   { id: 'aliyundrive', name: '阿里云盘', desc: '即将支持', available: false },
   { id: 'baidu', name: '百度网盘', desc: '即将支持', available: false },
   { id: 'onedrive', name: 'OneDrive', desc: '即将支持', available: false }
@@ -83,8 +87,8 @@ export function CloudPage() {
   const [entered, setEntered] = useState<string | null>(null)
 
   useEffect(() => {
-    void window.yiben.cloud.status().then(setStatus)
-    void window.yiben.cloud115.status().then(setStatus115)
+    void window.yudu.cloud.status().then(setStatus)
+    void window.yudu.cloud115.status().then(setStatus115)
   }, [])
 
   if (!status || !status115) {
@@ -99,33 +103,28 @@ export function CloudPage() {
   }
 
   if (entered === 'cloud189') {
-    return (
-      <Cloud189Drive
-        status={status}
-        onStatus={setStatus}
-        onExit={() => setEntered(null)}
-      />
-    )
+    return <Cloud189Drive status={status} onStatus={setStatus} onExit={() => setEntered(null)} />
   }
   if (entered === '115') {
     return (
-      <Cloud115Drive
-        status={status115}
-        onStatus={setStatus115}
-        onExit={() => setEntered(null)}
-      />
+      <Cloud115Drive status={status115} onStatus={setStatus115} onExit={() => setEntered(null)} />
     )
   }
 
   return (
-    <DriveList
-      status={status}
-      status115={status115}
-      onStatus={setStatus}
-      onStatus115={setStatus115}
-      onEnterCloud189={() => setEntered('cloud189')}
-      onEnter115={() => setEntered('115')}
-    />
+    <div>
+      <DriveList
+        status={status}
+        status115={status115}
+        onStatus={setStatus}
+        onStatus115={setStatus115}
+        onEnterCloud189={() => setEntered('cloud189')}
+        onEnter115={() => setEntered('115')}
+      />
+      <div id="webdav-section" className="mx-auto max-w-[1400px] px-8 pb-8">
+        <WebDavSection />
+      </div>
+    </div>
   )
 }
 
@@ -133,71 +132,57 @@ function CloudHeader() {
   return (
     <header className="mb-6">
       <h1 className="font-serif text-2xl font-semibold">网盘</h1>
-      <p className="mt-1 text-sm text-muted-foreground">
-        连接网盘账号，把云端的漫画目录挂载到书架
-      </p>
+      <p className="mt-1 text-sm text-muted-foreground">连接网盘账号，把云端的漫画目录挂载到书架</p>
     </header>
   )
 }
 
 // ---------- 扫码登录（天翼 / 115 共用） ----------
 
-interface QrApi {
-  start: () => Promise<{ dataUrl: string }>
-  poll: () => Promise<{ state: QrState; username?: string }>
-}
-
 /**
  * 扫码登录状态机：打开面板即取码；2.5 秒轮询扫码状态，确认后主进程已完成会话建立。
  * 过期/出错时由面板提供「刷新二维码」。
  */
-function useCloudQr(api: QrApi, open: boolean, onDone: () => Promise<void>): {
+function useCloudQr(
+  api: QrApi,
+  open: boolean,
+  onDone: () => Promise<void>
+): {
   image: string
   state: QrState
   error: string
+  loading: boolean
   refresh: () => void
 } {
   const [image, setImage] = useState('')
   const [state, setState] = useState<QrState>('waiting')
   const [error, setError] = useState('')
-  const pollingRef = useRef(false)
+  const [loading, setLoading] = useState(true)
+  const login = useRef(createQrLogin(api, {
+    image: setImage,
+    state: setState,
+    error: setError,
+    loading: setLoading,
+    done: onDone
+  }))
 
   const refresh = useCallback((): void => {
-    setError('')
-    setState('waiting')
-    setImage('')
-    api
-      .start()
-      .then((r) => setImage(r.dataUrl))
-      .catch((e) => setError(errorMessage(e)))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
+    void login.current.refresh()
+  }, [])
 
   useEffect(() => {
     if (!open) return
     refresh()
     const timer = setInterval(() => {
-      if (pollingRef.current) return
-      pollingRef.current = true
-      api
-        .poll()
-        .then(async (r) => {
-          setState(r.state)
-          if (r.state === 'done') {
-            await onDone()
-            setState('waiting')
-          }
-        })
-        .catch(() => {})
-        .finally(() => {
-          pollingRef.current = false
-        })
+      void login.current.poll()
     }, 2500)
-    return () => clearInterval(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
+    return () => {
+      clearInterval(timer)
+      login.current.close()
+    }
+  }, [open, refresh])
 
-  return { image, state, error, refresh }
+  return { image, state, error, loading, refresh }
 }
 
 function QrLoginPanel({
@@ -206,6 +191,7 @@ function QrLoginPanel({
   hint,
   guide,
   error,
+  loading,
   onRefresh,
   onClose,
   closeLabel
@@ -216,6 +202,7 @@ function QrLoginPanel({
   hint: string
   guide: string
   error: string
+  loading: boolean
   onRefresh: () => void
   onClose: () => void
   closeLabel: string
@@ -226,14 +213,18 @@ function QrLoginPanel({
         <div className="relative size-40 shrink-0 overflow-hidden rounded-lg border bg-white p-1.5">
           {image ? (
             <img src={image} alt="登录二维码" className="size-full" />
-          ) : (
+          ) : loading ? (
             <div className="grid size-full place-items-center">
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <div className="grid size-full place-items-center p-2 text-center text-xs text-destructive">
+              二维码获取失败
             </div>
           )}
           {state === 'expired' && (
             <div className="absolute inset-0 grid place-items-center bg-black/70">
-              <Button size="sm" variant="outline" onClick={onRefresh}>
+              <Button size="sm" variant="outline" onClick={onRefresh} disabled={loading}>
                 <RefreshCw />
                 刷新二维码
               </Button>
@@ -243,6 +234,12 @@ function QrLoginPanel({
         <div className="min-w-0 text-xs text-muted-foreground">
           <p className="text-sm font-medium text-foreground">{hint}</p>
           <p className="mt-1.5">{guide}</p>
+          {error && (
+            <Button size="sm" variant="outline" className="mt-2" disabled={loading} onClick={onRefresh}>
+              <RefreshCw />
+              重新获取二维码
+            </Button>
+          )}
           <button
             className="mt-2 text-primary underline-offset-2 hover:underline"
             onClick={onClose}
@@ -251,7 +248,7 @@ function QrLoginPanel({
           </button>
         </div>
       </div>
-      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+      {error && <p role="status" className="mt-2 text-xs text-destructive">{error}</p>}
     </div>
   )
 }
@@ -282,25 +279,25 @@ function DriveList({
   const [qr189Open, setQr189Open] = useState(false)
   const [qr115Open, setQr115Open] = useState(false)
 
-  const qr189 = useCloudQr(window.yiben.cloud.qr, qr189Open, async () => {
-    onStatus(await window.yiben.cloud.status())
+  const qr189 = useCloudQr(window.yudu.cloud.qr, qr189Open, async () => {
+    onStatus(await window.yudu.cloud.status())
     setQr189Open(false)
   })
-  const qr115 = useCloudQr(window.yiben.cloud115.qr, qr115Open, async () => {
-    onStatus115(await window.yiben.cloud115.status())
+  const qr115 = useCloudQr(window.yudu.cloud115.qr, qr115Open, async () => {
+    onStatus115(await window.yudu.cloud115.status())
     setQr115Open(false)
   })
 
   // 卡片上只取容量数字（轻接口），目录列表等点进网盘才加载
   const { data: capacity } = useAsync(
-    () => (status.loggedIn ? window.yiben.cloud.capacity(undefined) : Promise.resolve(null)),
+    () => (status.loggedIn ? window.yudu.cloud.capacity(undefined) : Promise.resolve(null)),
     [status.loggedIn]
   )
   const { data: capacity115 } = useAsync(
-    () => (status115.loggedIn ? window.yiben.cloud115.capacity() : Promise.resolve(null)),
+    () => (status115.loggedIn ? window.yudu.cloud115.capacity() : Promise.resolve(null)),
     [status115.loggedIn]
   )
-  const { data: mounts } = useAsync<MountRow[]>(() => window.yiben.libraries.list(), [])
+  const { data: mounts } = useAsync<MountRow[]>(() => window.yudu.libraries.list(), [])
   const cloud189Mounts = (mounts ?? []).filter((m) => m.kind === 'cloud189')
   const mounts115 = (mounts ?? []).filter((m) => m.kind === '115')
 
@@ -308,7 +305,7 @@ function DriveList({
     setBusy(true)
     setError('')
     try {
-      onStatus(await window.yiben.cloud.login(username, password))
+      onStatus(await window.yudu.cloud.login(username, password))
       setPassword('')
       setShowLogin(false)
     } catch (e) {
@@ -380,6 +377,7 @@ function DriveList({
               }
               guide="打开天翼云盘 App，右上角「扫一扫」扫描左侧二维码，在手机上确认后本应用将自动完成登录。"
               error={qr189.error}
+              loading={qr189.loading}
               onRefresh={qr189.refresh}
               onClose={() => setQr189Open(false)}
               closeLabel="收起，改用密码登录"
@@ -466,6 +464,7 @@ function DriveList({
               }
               guide="打开 115 App，右上角「扫一扫」扫描左侧二维码，在手机上确认后本应用将自动完成登录。"
               error={qr115.error}
+              loading={qr115.loading}
               onRefresh={qr115.refresh}
               onClose={() => setQr115Open(false)}
               closeLabel="收起"
@@ -478,7 +477,7 @@ function DriveList({
       <Card>
         <CardHeader title="添加网盘" />
         <CardBody>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
             {PROVIDERS.map((p) => {
               const connected =
                 (p.id === 'cloud189' && status.loggedIn) || (p.id === '115' && status115.loggedIn)
@@ -489,14 +488,16 @@ function DriveList({
                   onClick={() => {
                     if (p.id === 'cloud189') setQr189Open(true)
                     if (p.id === '115') setQr115Open(true)
+                    if (p.id === 'webdav') {
+                      document
+                        .getElementById('webdav-section')
+                        ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                      document
+                        .querySelector<HTMLInputElement>('input[aria-label="WebDAV 地址"]')
+                        ?.focus({ preventScroll: true })
+                    }
                   }}
-                  title={
-                    connected
-                      ? '已连接'
-                      : p.available
-                        ? '连接账号'
-                        : '即将支持，敬请期待'
-                  }
+                  title={connected ? '已连接' : p.available ? '连接账号' : '即将支持，敬请期待'}
                   className={cn(
                     'flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition-colors',
                     connected
@@ -546,9 +547,7 @@ function DriveCardRow({
         <Cloud className={cn('size-5', loggedIn ? 'text-primary' : 'text-muted-foreground')} />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium">
-          {loggedIn ? username : '未连接'}
-        </p>
+        <p className="text-sm font-medium">{loggedIn ? username : '未连接'}</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
           {loggedIn
             ? mountCount > 0
@@ -653,7 +652,9 @@ function MountListSection({
                         onClick={() => onRescan(lib)}
                         title="重新扫描该目录"
                       >
-                        <RefreshCw className={cn('size-3.5', rescanningId === lib.id && 'animate-spin')} />
+                        <RefreshCw
+                          className={cn('size-3.5', rescanningId === lib.id && 'animate-spin')}
+                        />
                         {rescanningId === lib.id ? '扫描中' : '重扫'}
                       </Button>
                       <Button
@@ -748,7 +749,10 @@ function BrowseSection({
           )}
           <button
             onClick={onRoot}
-            className={cn('rounded px-1 hover:text-foreground', stack.length === 0 && 'text-foreground')}
+            className={cn(
+              'rounded px-1 hover:text-foreground',
+              stack.length === 0 && 'text-foreground'
+            )}
           >
             根目录
           </button>
@@ -776,9 +780,7 @@ function BrowseSection({
           ) : error && !browse ? (
             <p className="px-3 py-8 text-center text-xs text-destructive">{error}</p>
           ) : !browse || (browse.folders.length === 0 && browse.files.length === 0) ? (
-            <p className="px-3 py-8 text-center text-xs text-muted-foreground">
-              此目录为空
-            </p>
+            <p className="px-3 py-8 text-center text-xs text-muted-foreground">此目录为空</p>
           ) : (
             <>
               {browse.folders.map((f) => (
@@ -820,7 +822,7 @@ function BrowseSection({
           )}
         </div>
 
-        <Button size="sm" className="w-full" disabled={addBusy || browsing} onClick={onAdd}>
+        <Button size="sm" className="w-full" disabled={addBusy || browsing || !browse} onClick={onAdd}>
           {addBusy ? <Loader2 className="animate-spin" /> : <FolderPlus />}
           {addLabel}
         </Button>
@@ -858,77 +860,87 @@ function Cloud189Drive({
   const capRetry = useRef<ReturnType<typeof setTimeout> | null>(null)
   const loadCapacity = useCallback((fam: string | undefined): void => {
     if (capRetry.current) clearTimeout(capRetry.current)
-    void window.yiben.cloud
+    void window.yudu.cloud
       .capacity(fam)
       .then(setCapacity)
       .catch(() => {
         capRetry.current = setTimeout(() => {
-          void window.yiben.cloud.capacity(fam).then(setCapacity).catch(() => {})
+          void window.yudu.cloud
+            .capacity(fam)
+            .then(setCapacity)
+            .catch(() => {})
         }, 3000)
       })
   }, [])
-  useEffect(() => () => { if (capRetry.current) clearTimeout(capRetry.current) }, [])
+  useEffect(
+    () => () => {
+      if (capRetry.current) clearTimeout(capRetry.current)
+    },
+    []
+  )
 
-  /**
-   * 加载目录。refresh 为 true 时不压栈（刷新当前层），
-   * 修掉旧实现「刷新会往面包屑里重复压一层」的问题。
-   * 序号防乱序：云端高延迟下连点两个文件夹，慢的旧响应后到时
-   * 会覆盖新目录内容且把栈压错（之后「挂载当前目录」会挂错）——
-   * 只有最新一次请求的结果可以落地。
-   */
-  const browseSeq = useRef(0)
+  // 云空间、路径与内容在请求成功后一起切换，失败时仍可安全使用原目录。
+  const directoryNavigation = useRef(createDirectoryNavigation<
+    { stack: DirectoryPath; familyId: string }, CloudBrowseResult
+  >({
+    commit: (target, result) => {
+      setStack(target.stack)
+      setFamilyId(target.familyId)
+      setBrowse(result)
+    },
+    error: (error) => setError(errorMessage(error)),
+    busy: setBrowsing
+  }))
   const browseInto = useCallback(
-    (id: string | undefined, name: string, fam: string | undefined, refresh = false): void => {
-      const seq = ++browseSeq.current
-      setBrowsing(true)
-      void window.yiben.cloud
-        .browse(id, fam)
-        .then((r) => {
-          if (seq !== browseSeq.current) return
-          setBrowse(r)
-          if (refresh) return
-          if (id) setStack((s) => [...s, { id, name }])
-          else setStack([])
-        })
-        .catch((e) => {
-          if (seq !== browseSeq.current) return
-          setError(errorMessage(e))
-        })
-        .finally(() => {
-          if (seq === browseSeq.current) setBrowsing(false)
-        })
+    (nextStack: DirectoryPath, nextFamilyId: string): void => {
+      setError('')
+      void directoryNavigation.current.navigate(
+        { stack: nextStack, familyId: nextFamilyId },
+        (target) => window.yudu.cloud.browse(
+          target.stack[target.stack.length - 1]?.id,
+          target.familyId || undefined
+        )
+      )
     },
     []
   )
 
   const reloadCurrent = useCallback((): void => {
-    browseInto(current?.id, current?.name ?? '根目录', famId, true)
-  }, [browseInto, current?.id, current?.name, famId])
+    browseInto(stack, familyId)
+  }, [browseInto, stack, familyId])
 
-  // 进入网盘 / 切换个人云与家庭云 → 加载对应空间（容量跟随当前空间）
+  useEffect(() => {
+    browseInto([], '')
+    return () => directoryNavigation.current.invalidate()
+  }, [browseInto])
+
+  // 容量跟随已经成功进入的空间。
   useEffect(() => {
     loadCapacity(famId)
-    setStack([])
-    browseInto(undefined, '根目录', famId)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [familyId])
+  }, [loadCapacity, famId])
 
   useEffect(() => {
-    void window.yiben.cloud.families().then(setFamilies).catch(() => {})
+    void window.yudu.cloud
+      .families()
+      .then(setFamilies)
+      .catch(() => {})
   }, [])
 
   const logout = async (): Promise<void> => {
-    onStatus(await window.yiben.cloud.logout())
+    onStatus(await window.yudu.cloud.logout())
     onExit()
   }
 
   // 已挂载目录（含各目录的系列数）；变更后靠 bump() 刷新
   const { data: mounts } = useAsync<MountRow[]>(
-    () => window.yiben.libraries.list().then((all: MountRow[]) => all.filter((m) => m.kind === 'cloud189')),
+    () =>
+      window.yudu.libraries
+        .list()
+        .then((all: MountRow[]) => all.filter((m) => m.kind === 'cloud189')),
     [version]
   )
   const { data: seriesList } = useAsync<Series[]>(
-    () => window.yiben.series.list({ limit: 5000 }),
+    () => window.yudu.series.list({ limit: 5000 }),
     [version]
   )
 
@@ -944,7 +956,7 @@ function Cloud189Drive({
     setBusy(true)
     setError('')
     try {
-      await window.yiben.libraries.remove(lib.id)
+      await window.yudu.libraries.remove(lib.id)
       setConfirmId(null)
       bump()
     } catch (e) {
@@ -958,7 +970,7 @@ function Cloud189Drive({
     setRescanningId(lib.id)
     setError('')
     try {
-      await window.yiben.libraries.rescan(lib.id)
+      await window.yudu.libraries.rescan(lib.id)
       bump()
     } catch (e) {
       setError(errorMessage(e))
@@ -968,11 +980,9 @@ function Cloud189Drive({
   }
 
   const addMount = (): void => {
-    const defaultName = famId
-      ? (families.find((f) => f.id === famId)?.name ?? '家庭云')
-      : '个人云'
+    const defaultName = famId ? (families.find((f) => f.id === famId)?.name ?? '家庭云') : '个人云'
     setBusy(true)
-    void window.yiben.cloud
+    void window.yudu.cloud
       .addLibrary(current?.id ?? '-11', famId, current?.name ?? defaultName)
       .then(() => bump())
       .catch((e) => setError(errorMessage(e)))
@@ -983,7 +993,10 @@ function Cloud189Drive({
     <div className="mx-auto max-w-[1400px] space-y-6 p-8">
       {/* 面包屑 */}
       <div className="flex items-center gap-1 text-xs text-muted-foreground">
-        <button onClick={onExit} className="rounded px-1 py-0.5 hover:bg-accent hover:text-foreground">
+        <button
+          onClick={onExit}
+          className="rounded px-1 py-0.5 hover:bg-accent hover:text-foreground"
+        >
           网盘
         </button>
         <span className="opacity-40">/</span>
@@ -1036,12 +1049,12 @@ function Cloud189Drive({
 
           {/* 云空间切换：个人云 / 各家庭云 */}
           <div className="flex flex-wrap gap-2">
-            <SourceChip active={familyId === ''} onClick={() => setFamilyId('')} label="个人云" />
+            <SourceChip active={familyId === ''} onClick={() => browseInto([], '')} label="个人云" />
             {families.map((f) => (
               <SourceChip
                 key={f.id}
                 active={familyId === f.id}
-                onClick={() => setFamilyId(f.id)}
+                onClick={() => browseInto([], f.id)}
                 label={`家庭云：${f.name}`}
               />
             ))}
@@ -1068,21 +1081,15 @@ function Cloud189Drive({
         error={error}
         onReload={reloadCurrent}
         onUp={() => {
-          const next = [...stack]
-          next.pop()
-          setStack(next)
-          const parent = next[next.length - 1]
-          browseInto(parent?.id, parent?.name ?? '根目录', famId, true)
+          browseInto(stack.slice(0, -1), familyId)
         }}
         onRoot={() => {
-          setStack([])
-          browseInto(undefined, '根目录', famId, true)
+          browseInto([], familyId)
         }}
-        onCrumb={(s, i) => {
-          setStack(stack.slice(0, i + 1))
-          browseInto(s.id, s.name, famId, true)
+        onCrumb={(_s, i) => {
+          browseInto(stack.slice(0, i + 1), familyId)
         }}
-        onEnter={(f) => browseInto(f.id, f.name, famId)}
+        onEnter={(f) => browseInto([...stack, f], familyId)}
         addLabel={`把「${current?.name ?? '根目录'}」加入挂载`}
         onAdd={addMount}
         addBusy={busy}
@@ -1115,54 +1122,47 @@ function Cloud115Drive({
 
   const current = stack[stack.length - 1]
 
-  const browseSeq = useRef(0)
-  const browseInto = useCallback(
-    (id: string | undefined, name: string, refresh = false): void => {
-      // 序号防乱序（同 189 侧）：慢的旧响应后到时不能覆盖新目录内容/压错栈
-      const seq = ++browseSeq.current
-      setBrowsing(true)
-      void window.yiben.cloud115
-        .browse(id)
-        .then((r) => {
-          if (seq !== browseSeq.current) return
-          setBrowse(r)
-          if (refresh) return
-          if (id) setStack((s) => [...s, { id, name }])
-          else setStack([])
-        })
-        .catch((e) => {
-          if (seq !== browseSeq.current) return
-          setError(errorMessage(e))
-        })
-        .finally(() => {
-          if (seq === browseSeq.current) setBrowsing(false)
-        })
+  const directoryNavigation = useRef(createDirectoryNavigation<DirectoryPath, CloudBrowseResult>({
+    commit: (target, result) => {
+      setStack(target)
+      setBrowse(result)
     },
-    []
-  )
-
-  const reloadCurrent = useCallback((): void => {
-    browseInto(current?.id, current?.name ?? '根目录', true)
-  }, [browseInto, current?.id, current?.name])
-
-  useEffect(() => {
-    setStack([])
-    browseInto(undefined, '根目录')
-    void window.yiben.cloud115.capacity().then(setCapacity).catch(() => {})
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    error: (error) => setError(errorMessage(error)),
+    busy: setBrowsing
+  }))
+  const browseInto = useCallback((nextStack: DirectoryPath): void => {
+    setError('')
+    void directoryNavigation.current.navigate(
+      nextStack,
+      (target) => window.yudu.cloud115.browse(target[target.length - 1]?.id)
+    )
   }, [])
 
+  const reloadCurrent = useCallback((): void => {
+    browseInto(stack)
+  }, [browseInto, stack])
+
+  useEffect(() => {
+    browseInto([])
+    void window.yudu.cloud115
+      .capacity()
+      .then(setCapacity)
+      .catch(() => {})
+    return () => directoryNavigation.current.invalidate()
+  }, [browseInto])
+
   const logout = async (): Promise<void> => {
-    onStatus(await window.yiben.cloud115.logout())
+    onStatus(await window.yudu.cloud115.logout())
     onExit()
   }
 
   const { data: mounts } = useAsync<MountRow[]>(
-    () => window.yiben.libraries.list().then((all: MountRow[]) => all.filter((m) => m.kind === '115')),
+    () =>
+      window.yudu.libraries.list().then((all: MountRow[]) => all.filter((m) => m.kind === '115')),
     [version]
   )
   const { data: seriesList } = useAsync<Series[]>(
-    () => window.yiben.series.list({ limit: 5000 }),
+    () => window.yudu.series.list({ limit: 5000 }),
     [version]
   )
 
@@ -1173,7 +1173,7 @@ function Cloud115Drive({
     setBusy(true)
     setError('')
     try {
-      await window.yiben.libraries.remove(lib.id)
+      await window.yudu.libraries.remove(lib.id)
       setConfirmId(null)
       bump()
     } catch (e) {
@@ -1187,7 +1187,7 @@ function Cloud115Drive({
     setRescanningId(lib.id)
     setError('')
     try {
-      await window.yiben.libraries.rescan(lib.id)
+      await window.yudu.libraries.rescan(lib.id)
       bump()
     } catch (e) {
       setError(errorMessage(e))
@@ -1198,7 +1198,7 @@ function Cloud115Drive({
 
   const addMount = (): void => {
     setBusy(true)
-    void window.yiben.cloud115
+    void window.yudu.cloud115
       .addLibrary(current?.id ?? '0', current?.name ?? '根目录')
       .then(() => bump())
       .catch((e) => setError(errorMessage(e)))
@@ -1209,7 +1209,10 @@ function Cloud115Drive({
     <div className="mx-auto max-w-[1400px] space-y-6 p-8">
       {/* 面包屑 */}
       <div className="flex items-center gap-1 text-xs text-muted-foreground">
-        <button onClick={onExit} className="rounded px-1 py-0.5 hover:bg-accent hover:text-foreground">
+        <button
+          onClick={onExit}
+          className="rounded px-1 py-0.5 hover:bg-accent hover:text-foreground"
+        >
           网盘
         </button>
         <span className="opacity-40">/</span>
@@ -1280,21 +1283,15 @@ function Cloud115Drive({
         error={error}
         onReload={reloadCurrent}
         onUp={() => {
-          const next = [...stack]
-          next.pop()
-          setStack(next)
-          const parent = next[next.length - 1]
-          browseInto(parent?.id, parent?.name ?? '根目录', true)
+          browseInto(stack.slice(0, -1))
         }}
         onRoot={() => {
-          setStack([])
-          browseInto(undefined, '根目录', true)
+          browseInto([])
         }}
-        onCrumb={(s, i) => {
-          setStack(stack.slice(0, i + 1))
-          browseInto(s.id, s.name, true)
+        onCrumb={(_s, i) => {
+          browseInto(stack.slice(0, i + 1))
         }}
-        onEnter={(f) => browseInto(f.id, f.name)}
+        onEnter={(f) => browseInto([...stack, f])}
         addLabel={`把「${current?.name ?? '根目录'}」加入挂载`}
         onAdd={addMount}
         addBusy={busy}

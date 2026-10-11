@@ -18,7 +18,7 @@ import { scanLibrary, scanOneLocalSeries } from './scanner'
 import { ensurePageDims } from './pageDims'
 
 /**
- * 开发自测钩子：YIBEN_SELFTEST=<fixture路径> 时执行
+ * 开发自测钩子：YUDU_SELFTEST=<fixture路径> 时执行
  * 加库 → 扫描 → 查询 → 协议读页 → 封面 → 进度 → 书签/跨话/已读/元数据/页尺寸，
  * 输出 SELFTEST_OK 后退出。
  */
@@ -39,13 +39,13 @@ export async function runSelfTest(fixture: string): Promise<void> {
     const chapters = chaptersBySeries(first.id)
 
     // 协议读页
-    const pageResp = await net.fetch(`yiben://page/${chapters[0].id}/0`)
+    const pageResp = await net.fetch(`yudu://page/${chapters[0].id}/0`)
     const pageBuf = await pageResp.arrayBuffer()
     // 封面
-    const thumbResp = await net.fetch(`yiben://thumb/${first.id}`)
+    const thumbResp = await net.fetch(`yudu://thumb/${first.id}`)
     const thumbBuf = await thumbResp.arrayBuffer()
     // 页缩略图（取页 → sharp 缩小 → 落盘缓存）
-    const pageThumbResp = await net.fetch(`yiben://page-thumb/${chapters[0].id}/0`)
+    const pageThumbResp = await net.fetch(`yudu://page-thumb/${chapters[0].id}/0`)
     const pageThumbBuf = await pageThumbResp.arrayBuffer()
 
     // 进度读写

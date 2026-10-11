@@ -57,7 +57,7 @@ function LibraryManager({
     setBusy(true)
     setError('')
     try {
-      await window.yiben.libraries.remove(lib.id)
+      await window.yudu.libraries.remove(lib.id)
       setConfirmId(null)
       bump()
     } catch (e) {
@@ -83,7 +83,7 @@ function LibraryManager({
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{lib.name}</p>
                 <p className="truncate text-xs text-muted-foreground">
-                  {lib.kind === 'cloud189' ? '天翼云盘' : lib.kind === '115' ? '115 网盘' : '本地'} ·{' '}
+                  {lib.kind === 'cloud189' ? '天翼云盘' : lib.kind === '115' ? '115 网盘' : lib.kind === 'webdav' ? 'WebDAV / NAS' : '本地'} ·{' '}
                   {lib.path}
                 </p>
               </div>
@@ -153,13 +153,13 @@ export function LibraryPage() {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const { data: libraries } = useAsync<LibraryRow[]>(
-    () => window.yiben.libraries.list(),
+    () => window.yudu.libraries.list(),
     [version]
   )
-  const { data: shelves } = useAsync<ShelfInfo[]>(() => window.yiben.shelves.list(), [version])
+  const { data: shelves } = useAsync<ShelfInfo[]>(() => window.yudu.shelves.list(), [version])
   const { data: series, error: seriesError } = useAsync<Series[]>(
     () =>
-      window.yiben.series.list({
+      window.yudu.series.list({
         query: debouncedQuery.trim() || undefined,
         filter,
         shelfId: shelfId ?? undefined,
@@ -191,7 +191,7 @@ export function LibraryPage() {
   const batchRemove = async (): Promise<void> => {
     setBatchError('')
     try {
-      await window.yiben.series.removeMany([...selected])
+      await window.yudu.series.removeMany([...selected])
       exitSelectMode()
       bump()
     } catch (e) {
@@ -200,7 +200,7 @@ export function LibraryPage() {
   }
 
   const addLibrary = async (): Promise<void> => {
-    await window.yiben.libraries.add()
+    await window.yudu.libraries.add()
     // 扫描进行中，进度事件完成后会 bump version
   }
 
@@ -210,7 +210,7 @@ export function LibraryPage() {
       for (const lib of libraries ?? []) {
         // 单个库失败不中断其余库；失败原因由主进程 scan:notice 推给右下角浮标
         try {
-          await window.yiben.libraries.rescan(lib.id)
+          await window.yudu.libraries.rescan(lib.id)
         } catch {
           /* 已由 ScanIndicator 呈现 */
         }

@@ -1,21 +1,22 @@
 {
-  "name": "yiben",
-  "productName": "一本 Yiben",
-  "version": "0.2.2",
+  "name": "yudu",
+  "productName": "雨读 Yudu",
+  "version": "0.3.0",
   "description": "精美的本地 + 天翼云盘漫画阅读器",
   "main": "./out/main/index.js",
-  "author": "yiben",
+  "author": "yudu",
   "license": "MIT",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
+    "test:reader": "node scripts/reader-regression.js",
     "dist": "electron-vite build && electron-builder --win nsis --publish never"
   },
   "build": {
-    "appId": "com.yiben.app",
-    "productName": "一本 Yiben",
+    "appId": "com.yudu.app",
+    "productName": "雨读 Yudu",
     "directories": {
       "output": "dist"
     },
@@ -28,7 +29,7 @@
     ],
     "publish": {
       "provider": "generic",
-      "url": "https://yiben.kaikun.top"
+      "url": "https://yudu-media.yeyushi.com"
     },
     "releaseInfo": {
       "releaseNotesFile": "RELEASE_NOTES.md"
@@ -40,6 +41,7 @@
     ],
     "win": {
       "icon": "build/icon.ico",
+      "executableName": "Yudu",
       "target": [
         {
           "target": "nsis",
@@ -52,31 +54,31 @@
         {
           "ext": "cbz",
           "name": "漫画压缩包 (CBZ)",
-          "description": "用一本 Yiben 打开漫画压缩包",
+          "description": "用雨读 Yudu 打开漫画压缩包",
           "icon": "build/icon.ico"
         },
         {
           "ext": "cbr",
           "name": "漫画压缩包 (CBR)",
-          "description": "用一本 Yiben 打开漫画压缩包",
+          "description": "用雨读 Yudu 打开漫画压缩包",
           "icon": "build/icon.ico"
         },
         {
           "ext": "cb7",
           "name": "漫画压缩包 (CB7)",
-          "description": "用一本 Yiben 打开漫画压缩包",
+          "description": "用雨读 Yudu 打开漫画压缩包",
           "icon": "build/icon.ico"
         },
         {
           "ext": "cbt",
           "name": "漫画压缩包 (CBT)",
-          "description": "用一本 Yiben 打开漫画压缩包",
+          "description": "用雨读 Yudu 打开漫画压缩包",
           "icon": "build/icon.ico"
         },
         {
           "ext": "pdf",
           "name": "PDF 文档",
-          "description": "用一本 Yiben 打开 PDF 漫画",
+          "description": "用雨读 Yudu 打开 PDF 漫画",
           "icon": "build/icon.ico"
         }
       ]
@@ -86,31 +88,31 @@
         {
           "ext": "cbz",
           "name": "漫画压缩包 (CBZ)",
-          "description": "用一本 Yiben 打开漫画压缩包",
+          "description": "用雨读 Yudu 打开漫画压缩包",
           "role": "Viewer"
         },
         {
           "ext": "cbr",
           "name": "漫画压缩包 (CBR)",
-          "description": "用一本 Yiben 打开漫画压缩包",
+          "description": "用雨读 Yudu 打开漫画压缩包",
           "role": "Viewer"
         },
         {
           "ext": "cb7",
           "name": "漫画压缩包 (CB7)",
-          "description": "用一本 Yiben 打开漫画压缩包",
+          "description": "用雨读 Yudu 打开漫画压缩包",
           "role": "Viewer"
         },
         {
           "ext": "cbt",
           "name": "漫画压缩包 (CBT)",
-          "description": "用一本 Yiben 打开漫画压缩包",
+          "description": "用雨读 Yudu 打开漫画压缩包",
           "role": "Viewer"
         },
         {
           "ext": "pdf",
           "name": "PDF 文档",
-          "description": "用一本 Yiben 打开 PDF 漫画",
+          "description": "用雨读 Yudu 打开 PDF 漫画",
           "role": "Viewer"
         }
       ]
@@ -120,7 +122,7 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false,
-      "artifactName": "Yiben_${version}_setup.exe",
+      "artifactName": "Yudu_${version}_setup.exe",
       "installerLanguages": [
         "zh_CN"
       ],

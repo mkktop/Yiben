@@ -19,14 +19,14 @@ export function ScanIndicator() {
   const close = useToastStore((s) => s.close)
 
   useEffect(() => {
-    const offProgress = window.yiben.events.onScanProgress((p) => {
+    const offProgress = window.yudu.events.onScanProgress((p) => {
       const payload = p as { phase: string; current?: number; total?: number; title?: string }
       setProgress(payload)
       // 新一轮扫描开始：清掉上一轮的提示
       if (payload.phase !== 'done') setNotice(null)
       if (payload.phase === 'done') bump()
     })
-    const offNotice = window.yiben.events.onScanNotice((n) => setNotice(n))
+    const offNotice = window.yudu.events.onScanNotice((n) => setNotice(n))
     return () => {
       offProgress()
       offNotice()
