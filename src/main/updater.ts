@@ -30,7 +30,8 @@ const R2_FEED = {
 const GH_FEED = {
   provider: 'github',
   owner: 'mkktop',
-  repo: 'Yudu'
+  // 仓库实际名是 Yiben（mkktop/Yudu 不存在、无重定向，写了会 404）
+  repo: 'Yiben'
 } as const
 
 // 最近一次成功检查所用的渠道：renderer 重载后经 updateState 恢复展示
