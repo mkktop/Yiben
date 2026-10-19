@@ -57,6 +57,7 @@ pnpm dist       # 打包（electron-builder，Windows：nsis）
 - `scan_error` 里 PDF 章节恒报「暂不支持的格式」——这是扫描器的能力边界声明，不是文件损坏；读 `scan_error` 的功能必须排除 `kind='pdf'`。
 - 天翼家庭云 open API 的 `-11` 根目录只有默认空文件夹，真实内容在「我的应用/家庭云」，列目录时自动下钻（`cloud189/client.ts`）。
 - 天翼下载直链含 XML 实体转义（`&amp;`），必须解码后再 fetch，否则 403。
+- 更多实测怪癖、无头验证配方与架构不变量见 `docs/memory/`。
 
 ## 发版链
 
@@ -71,3 +72,4 @@ tag `v*` → GitHub Actions（`.github/workflows/release.yml`）出 NSIS 包 →
 - `docs/FEATURE_BACKLOG.md` — 功能候选规格 + 可复制给外部 AI 的自包含提示词
 - `docs/UI_BEAUTIFICATION.md` — v0.2.0 视觉重构的设计语言（纸墨书斋 / 现代漫画），已落地，留作设计参考
 - `docs/CODE_REVIEW.md` — 2026-09-11 的审查报告，**问题均已修复，仅作历史记录勿照修**
+- `docs/memory/` — 实测经验沉淀：云盘接口怪癖、阅读器不变量、无头验证配方、发版约束（2026-10-19 入库）
