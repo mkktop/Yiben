@@ -1,7 +1,7 @@
 {
   "name": "yudu",
   "productName": "雨读 Yudu",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "精美的本地 + 天翼云盘漫画阅读器",
   "main": "./out/main/index.js",
   "author": "yudu",
@@ -37,6 +37,16 @@
     "files": [
       "out/**",
       "!**/node_modules/*/{CHANGELOG.md,README.md,README_*.md,.md}",
+      "!**/node_modules/@napi-rs/**",
+      "!**/node_modules/pdfjs-dist/**",
+      "!**/node_modules/lucide-react/**",
+      "!**/node_modules/better-sqlite3/deps/**",
+      "!**/node_modules/better-sqlite3/src/**",
+      "!**/node_modules/better-sqlite3/prebuilds/darwin-*.node",
+      "!**/node_modules/better-sqlite3/prebuilds/linux*.node",
+      "!**/node_modules/better-sqlite3/prebuilds/win32-arm64.node",
+      "!**/node_modules/7zip-bin/mac/**",
+      "!**/node_modules/7zip-bin/linux/**",
       "package.json"
     ],
     "win": {
@@ -127,42 +137,47 @@
         "zh_CN"
       ],
       "language": "2052"
-    }
+    },
+    "compression": "maximum",
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ]
   },
   "dependencies": {
     "7zip-bin": "^5.2.0",
-    "@tanstack/react-virtual": "^3.14.11",
     "better-sqlite3": "^13.0.3",
     "chokidar": "^5.0.0",
     "cloud189-sdk": "^1.0.9",
-    "clsx": "^2.1.1",
     "electron-updater": "^6.8.9",
     "fast-xml-parser": "^5.11.1",
-    "lucide-react": "^0.544.0",
     "node-stream-zip": "^1.16.0",
     "node-unrar-js": "^2.0.2",
-    "pdfjs-dist": "^6.3.289",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^7.9.0",
-    "sharp": "^0.35.4",
-    "tailwind-merge": "^3.3.0",
-    "zustand": "^5.0.8"
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "@electron-toolkit/utils": "^4.0.0",
     "@tailwindcss/vite": "^4.1.0",
+    "@tanstack/react-virtual": "^3.14.11",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^24.0.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^5.0.0",
+    "clsx": "^2.1.1",
     "electron": "^44.0.0",
     "electron-builder": "^25.1.8",
     "electron-vite": "^5.0.0",
+    "lucide-react": "^0.544.0",
+    "pdfjs-dist": "^6.3.289",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.9.0",
+    "tailwind-merge": "^3.3.0",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.8.0",
     "vite": "^7.0.0",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.0",
+    "zustand": "^5.0.8"
   }
 }
