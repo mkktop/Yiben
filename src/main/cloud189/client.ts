@@ -1,6 +1,5 @@
 import { app, safeStorage } from 'electron'
 import { CloudClient, QRCodeStatus, Store } from 'cloud189-sdk'
-import type { QRCodeData } from 'cloud189-sdk'
 import { readFile, rename, rm, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { getSetting, setSetting } from '../settings'
@@ -214,10 +213,13 @@ export async function cloudQrStart(): Promise<{ dataUrl: string }> {
   const store = new EncryptedTokenStore()
   const qrClient = new CloudClient({ token: store })
   const qrData = await qrClient.authClient.getQRCode()
-  // image.do 直接返回官方渲染的登录二维码（内容为 App 确认页地址）
-  // encodeuuid 运行时必有，SDK 的 d.ts 漏了声明
-  const encodeuuid = (qrData as QRCodeData & { encodeuuid: string }).encodeuuid
-  const resp = await fetch(`https://open.e.189.cn/api/logbox/oauth2/image.do?uuid=${encodeuuid}`)
+  // image.do 直接返回官方渲染的登录二维码（内容为 App 确认页地址）。
+  // 参数必须用 encodeURIComponent(uuid)：cloud189-sdk 的 getQRCode 是显式挑字段返回，
+  // 天翼原始响应里的 encodeuuid 并不在返回对象上（d.ts 与运行时都没有）——
+  // 取它会拼出 uuid=undefined，image.do 仍回 200，但给的是扫了无效的占位图。
+  const resp = await fetch(
+    `https://open.e.189.cn/api/logbox/oauth2/image.do?uuid=${encodeURIComponent(qrData.uuid)}`
+  )
   if (!resp.ok) throw new Error(`二维码获取失败：HTTP ${resp.status}`)
   const buf = Buffer.from(await resp.arrayBuffer())
   const type = resp.headers.get('content-type') ?? 'image/png'
