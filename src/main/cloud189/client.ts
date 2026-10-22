@@ -278,6 +278,16 @@ export interface CloudEntry {
   name: string
   size: number
   isDir: boolean
+  /** 最后修改时间（epoch ms）；解析失败缺省，扫描该章节退化为全量列举 */
+  mtime?: number
+}
+
+/** 189 lastOpTime（'YYYY-MM-DD HH:mm:ss'，北京时间口径）→ epoch ms；非法输入返回 0。
+ *  固定 +08:00 偏移只求「同字符串必得同数值」（变化检测自洽），不代表绝对时刻精确 */
+function parse189Time(s: unknown): number {
+  if (typeof s !== 'string' || !s) return 0
+  const t = Date.parse(`${s.replace(' ', 'T')}+08:00`)
+  return Number.isFinite(t) ? t : 0
 }
 
 /** 列出云盘目录（自动翻页）；出口统一做风控识别 */
@@ -322,9 +332,14 @@ async function cloudListPage(
       )
     )
     const ao = resp.fileListAO
-    for (const f of ao.folderList ?? []) out.push({ id: f.id, name: f.name, size: 0, isDir: true })
-    for (const f of ao.fileList ?? [])
-      out.push({ id: f.id, name: f.name, size: f.size ?? 0, isDir: false })
+    for (const f of ao.folderList ?? []) {
+      const mtime = parse189Time(f.lastOpTime)
+      out.push({ id: f.id, name: f.name, size: 0, isDir: true, mtime: mtime || undefined })
+    }
+    for (const f of ao.fileList ?? []) {
+      const mtime = parse189Time(f.lastOpTime)
+      out.push({ id: f.id, name: f.name, size: f.size ?? 0, isDir: false, mtime: mtime || undefined })
+    }
     // 某页缺字段时不能直接访问 length（防御 API 抖动把整库扫描打挂）
     if (
       out.length >= (ao.count ?? 0) ||

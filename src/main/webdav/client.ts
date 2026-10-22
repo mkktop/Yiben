@@ -117,11 +117,13 @@ export function parseWebDavListing(xml: string, base: string, folder: string): C
     const relative = url.pathname.slice(new URL(base).pathname.length)
     const id = Buffer.from(relative).toString('base64url')
     seen.add(url.pathname)
+    const mtime = Date.parse(String(prop.getlastmodified ?? ''))
     entries.push({
       id,
       name: decodeURIComponent(tail),
       isDir: Boolean(isDir),
-      size: Math.max(0, Number(prop.getcontentlength) || 0)
+      size: Math.max(0, Number(prop.getcontentlength) || 0),
+      mtime: Number.isFinite(mtime) ? mtime : undefined
     })
   }
   return entries

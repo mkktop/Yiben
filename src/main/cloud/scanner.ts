@@ -1,10 +1,12 @@
 import { join } from 'path'
 import {
   deleteChaptersNotIn,
+  getChapterMetaIfUnchanged,
   getLibrary,
   rebuildFts,
   replaceChapterPages,
   retireSeriesNotIn,
+  seriesPathExists,
   upsertChapter,
   upsertSeries
 } from '../db'
@@ -27,6 +29,8 @@ interface ChapterInput {
   name: string
   size: number
   isDir: boolean
+  /** 云端条目的最后修改时间，用于增量跳过逐章列举 */
+  mtime?: number
 }
 
 /**
@@ -102,6 +106,13 @@ export async function scanCloudLibrary(
   const rootDirs = root.filter((e) => e.isDir)
   const rootArchives = root.filter((e) => !e.isDir && archiveKindOf(e.name))
 
+  /** 条目是否为库内已验证（页数>0）且 mtime 未变的章节目录；增量判定复用 */
+  const isVerifiedChapterDir = (e: CloudEntry): boolean => {
+    if (!e.mtime) return false
+    const reuse = getChapterMetaIfUnchanged(join(cacheDir(), `f-${e.id}`), 0, e.mtime)
+    return reuse !== null && reuse > 0
+  }
+
   // 根下文件夹分类：volume=卷文件夹 wrapper=同名嵌套等包装层 series=独立作品
   const dirKind = new Map<string, 'volume' | 'wrapper' | 'series'>()
   for (const [i, d] of rootDirs.entries()) {
@@ -117,15 +128,20 @@ export async function scanCloudLibrary(
       dirKind.set(d.id, 'volume')
     } else {
       const subDirs = children.filter((e) => e.isDir)
-      const isWrapper =
-        subDirs.length > 0 &&
-        subDirs.length === children.length &&
-        (
-          await listAllLimited(
-            subDirs.map((s) => s.id),
-            list
+      const allDirs = subDirs.length > 0 && subDirs.length === children.length
+      let isWrapper = false
+      if (allDirs) {
+        // 增量：根系列已入库且每个子目录都是已验证的章节目录（mtime 未变）→
+        // 子目录仍是图片目录，上轮 wrapper 分类不变，跳过逐个下钻列举。
+        // 多系列布局（子目录各自成系列）在库里没有 f-{子目录id} 章节，不会误命中
+        if (seriesPathExists(`${scheme}://${cloudFolderId}`) && subDirs.every(isVerifiedChapterDir)) {
+          isWrapper = true
+        } else {
+          isWrapper = (await listAllLimited(subDirs.map((s) => s.id), list)).every((c) =>
+            isVolumeChildren(c)
           )
-        ).every((c) => isVolumeChildren(c))
+        }
+      }
       dirKind.set(d.id, isWrapper ? 'wrapper' : 'series')
     }
   }
@@ -147,10 +163,19 @@ export async function scanCloudLibrary(
     },
     onChapter?: (chapterIndex: number, chapterTotal: number) => void
   ): Promise<boolean> => {
-    const chapters: ChapterInput[] = []
+    const chapters: Array<ChapterInput & { reuse?: number }> = []
     for (const [i, ch] of input.chapters.entries()) {
       onChapter?.(i, input.chapters.length)
       if (ch.isDir) {
+        // 增量：父目录列表里的 mtime 与库内记录一致且页数已验证（>0）→
+        // 跳过逐章列举（列表调用是云端扫描的主要成本）。mtime 缺省或对不上仍全量列举
+        const reuse = ch.mtime
+          ? getChapterMetaIfUnchanged(join(cacheDir(), `f-${ch.cloudId}`), 0, ch.mtime)
+          : null
+        if (reuse !== null && reuse > 0) {
+          chapters.push({ ...ch, reuse })
+          continue
+        }
         const pages = (await list(ch.cloudId)).filter((e) => !e.isDir && isImageFile(e.name))
         if (pages.length > 0) chapters.push(ch)
       } else {
@@ -179,8 +204,26 @@ export async function scanCloudLibrary(
 
       if (ch.isDir) {
         // 云端散图章节：页清单直接入库，阅读时按页下载
-        const pages = (await list(ch.cloudId)).filter((e) => !e.isDir && isImageFile(e.name))
         const path = join(cacheDir(), `f-${ch.cloudId}`)
+        if (ch.reuse) {
+          // 增量命中：页清单沿用库内记录（不调 replaceChapterPages），只回写 mtime
+          upsertChapter({
+            series_id: seriesId,
+            title: parsed.title,
+            volume: null,
+            number: parsed.number ?? parsed.volume ?? null,
+            sort_index: i,
+            path,
+            kind: 'cfolder',
+            page_count: ch.reuse,
+            size: 0,
+            mtime: ch.mtime ?? 0
+          })
+          keepPaths.push(path)
+          chapterTotal++
+          continue
+        }
+        const pages = (await list(ch.cloudId)).filter((e) => !e.isDir && isImageFile(e.name))
         const chapterId = upsertChapter({
           series_id: seriesId,
           title: parsed.title,
@@ -191,7 +234,7 @@ export async function scanCloudLibrary(
           kind: 'cfolder',
           page_count: pages.length,
           size: 0,
-          mtime: 0
+          mtime: ch.mtime ?? 0
         })
         replaceChapterPages(
           chapterId,
@@ -235,18 +278,20 @@ export async function scanCloudLibrary(
       cloudId: f.id,
       name: f.name,
       size: f.size,
-      isDir: false
+      isDir: false,
+      mtime: f.mtime
     }))
     for (const d of rootDirs) {
       const kind = dirKind.get(d.id)
       if (kind === 'volume') {
-        chapters.push({ cloudId: d.id, name: d.name, size: 0, isDir: true })
+        chapters.push({ cloudId: d.id, name: d.name, size: 0, isDir: true, mtime: d.mtime })
       } else if (kind === 'wrapper') {
         // 同名嵌套包装层：展开为其中各卷
         for (const sub of await list(d.id)) {
-          if (sub.isDir) chapters.push({ cloudId: sub.id, name: sub.name, size: 0, isDir: true })
+          if (sub.isDir)
+            chapters.push({ cloudId: sub.id, name: sub.name, size: 0, isDir: true, mtime: sub.mtime })
           else if (archiveKindOf(sub.name))
-            chapters.push({ cloudId: sub.id, name: sub.name, size: sub.size, isDir: false })
+            chapters.push({ cloudId: sub.id, name: sub.name, size: sub.size, isDir: false, mtime: sub.mtime })
         }
       }
     }
@@ -305,13 +350,19 @@ export async function scanCloudLibrary(
         const dirs = children.filter((e) => e.isDir)
         const files = children.filter((e) => !e.isDir)
         const chapters: ChapterInput[] = [
-          ...dirs.map((d) => ({ cloudId: d.id, name: d.name, size: 0, isDir: true })),
+          ...dirs.map((d) => ({ cloudId: d.id, name: d.name, size: 0, isDir: true, mtime: d.mtime })),
           ...files
             .filter((f) => archiveKindOf(f.name))
-            .map((f) => ({ cloudId: f.id, name: f.name, size: f.size, isDir: false }))
+            .map((f) => ({ cloudId: f.id, name: f.name, size: f.size, isDir: false, mtime: f.mtime }))
         ]
         if (files.some((f) => isImageFile(f.name))) {
-          chapters.push({ cloudId: input.entry.id, name: input.title, size: 0, isDir: true })
+          chapters.push({
+            cloudId: input.entry.id,
+            name: input.title,
+            size: 0,
+            isDir: true,
+            mtime: input.entry.mtime
+          })
         }
         await writeSeries(
           {

@@ -11,6 +11,8 @@ export interface CloudEntry {
   name: string
   size: number
   isDir: boolean
+  /** 最后修改时间（epoch ms）；接口未提供时缺省，扫描该章节退化为全量列举 */
+  mtime?: number
 }
 
 interface RawListItem {
@@ -19,6 +21,8 @@ interface RawListItem {
   n?: string
   s?: string | number
   pc?: string | null
+  /** 最后修改时间（unix 秒）；目录项也可能缺失 */
+  te?: string | number
 }
 
 /** 宽容地把 string | number 解析成数字（115 各接口口径不一） */
@@ -39,10 +43,11 @@ export function parseListEntry(raw: RawListItem): CloudEntry | null {
   const id = isDir ? raw.cid : raw.fid || raw.pc
   const idStr = id === undefined || id === null ? '' : String(id)
   if (!idStr) return null
-  if (isDir) return { id: idStr, name, size: 0, isDir: true }
+  const mtime = toNum(raw.te) * 1000
+  if (isDir) return { id: idStr, name, size: 0, isDir: true, mtime: mtime || undefined }
   // 文件的下载走 pickcode，直接用它当条目 id；pc 缺失的条目无法下载，跳过
   if (!raw.pc) return null
-  return { id: String(raw.pc), name, size: toNum(raw.s), isDir: false }
+  return { id: String(raw.pc), name, size: toNum(raw.s), isDir: false, mtime: mtime || undefined }
 }
 
 export interface RawListResponse {

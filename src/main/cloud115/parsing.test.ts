@@ -38,6 +38,14 @@ describe('parseListEntry', () => {
     expect(parseListEntry({ fid: '1', cid: 0, pc: 'abc' })).toBeNull()
     expect(parseListEntry({ fid: '1', cid: 0, n: 'a.jpg' })).toBeNull()
   })
+
+  it('te 字段解析为 epoch ms（秒→毫秒），缺失时 mtime 缺省', () => {
+    const file = parseListEntry({ fid: '1', cid: 0, n: 'a.zip', pc: 'p1', te: '1770000000' })
+    const folder = parseListEntry({ cid: '249', n: '卷一', te: 1770000000 })
+    expect(file?.mtime).toBe(1770000000000)
+    expect(folder?.mtime).toBe(1770000000000)
+    expect(parseListEntry({ cid: '250', n: '卷二' })?.mtime).toBeUndefined()
+  })
 })
 
 describe('parseListResponse', () => {

@@ -701,6 +701,13 @@ export function getChapterMetaIfUnchanged(
   return row ? row.page_count : null
 }
 
+/** 该 folder_path 的系列是否已入库（云端扫描增量用：判断上轮目录布局分类） */
+export function seriesPathExists(folderPath: string): boolean {
+  return (
+    db.prepare('SELECT 1 FROM series WHERE folder_path = ? LIMIT 1').get(folderPath) !== undefined
+  )
+}
+
 export function countByLibrary(libraryId: number): { series: number; chapters: number } {
   const series = (
     db

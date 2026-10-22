@@ -37,6 +37,23 @@ describe('WebDAV 目录与路径约束', () => {
       new URL(base).href + '%E7%AC%AC1%E5%8D%B7/'
     )
   })
+
+  it('getlastmodified 解析为 mtime，缺省或非法时不设置', () => {
+    const root = new URL(base).pathname
+    const item = (href: string, prop = ''): string =>
+      `<d:response><d:href>${href}</d:href><d:propstat><d:prop>${prop}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`
+    const xml =
+      `<d:multistatus xmlns:d="DAV:">${item(root)}` +
+      item(`${root}vol/`, '<d:resourcetype><d:collection/></d:resourcetype><d:getlastmodified>Wed, 21 Oct 2026 13:00:00 GMT</d:getlastmodified>') +
+      item(`${root}1.cbz`, '<d:getcontentlength>12</d:getcontentlength><d:getlastmodified>Wed, 21 Oct 2026 13:00:00 GMT</d:getlastmodified>') +
+      item(`${root}2.cbz`, '<d:getcontentlength>3</d:getcontentlength><d:getlastmodified>not-a-date</d:getlastmodified>') +
+      `</d:multistatus>`
+    const result = parseWebDavListing(xml, new URL(base).href, 'root')
+    expect(result[0].mtime).toBe(Date.parse('Wed, 21 Oct 2026 13:00:00 GMT'))
+    expect(result[1].mtime).toBe(Date.parse('Wed, 21 Oct 2026 13:00:00 GMT'))
+    expect(result[2].mtime).toBeUndefined()
+  })
+
   it('拒绝跨站、编码后的上级跳转和反斜杠', () => {
     for (const path of [
       '../escape',

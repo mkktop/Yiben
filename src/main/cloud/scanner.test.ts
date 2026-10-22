@@ -8,18 +8,20 @@ vi.mock('../db', () => ({
   replaceChapterPages: vi.fn(),
   deleteChaptersNotIn: vi.fn(() => []),
   retireSeriesNotIn: vi.fn(() => ({ missing: 0, deletedSeries: [], deletedChapters: [] })),
-  rebuildFts: vi.fn()
+  rebuildFts: vi.fn(),
+  getChapterMetaIfUnchanged: vi.fn(() => null),
+  seriesPathExists: vi.fn(() => false)
 }))
 vi.mock('../thumbnail', () => ({ removeSeriesArtifacts: vi.fn() }))
 vi.mock('../pageThumb', () => ({ removePageThumbs: vi.fn() }))
 
-import { rebuildFts } from '../db'
+import { rebuildFts, getChapterMetaIfUnchanged, upsertChapter, seriesPathExists } from '../db'
 import { scanCloudLibrary, type CloudScanProgress } from './scanner'
 
 type LogItem = ['list', string] | ['progress', CloudScanProgress]
 
 /** dir(id) 目录 + img(id) 单图，构造最小云盘树 */
-const dir = (id: string): CloudEntry => ({ id, name: id, size: 0, isDir: true })
+const dir = (id: string, mtime?: number): CloudEntry => ({ id, name: id, size: 0, isDir: true, mtime })
 const img = (id: string): CloudEntry => ({ id, name: `${id}.jpg`, size: 1, isDir: false })
 
 /**
@@ -100,5 +102,52 @@ describe('云端扫描进度事件', () => {
       { libraryId: 7, current: 0, total: 2, title: '测试库（1/2）', phase: 'reading' },
       { libraryId: 7, current: 1, total: 2, title: '测试库（2/2）', phase: 'reading' }
     ])
+  })
+
+  it('增量：全命中时分类不下钻、章节不再列举（根+根目录两轮列表即完成）', async () => {
+    // 单系列布局：根系列已入库，ch1/ch2 都是库内已验证章节（mtime 5000/6000 各自命中）
+    vi.mocked(seriesPathExists).mockReturnValue(true)
+    vi.mocked(getChapterMetaIfUnchanged).mockImplementation(
+      (_p, _s, m) => (m === 5000 ? 3 : m === 6000 ? 2 : null)
+    )
+    const log = await run({
+      root: [dir('w')],
+      w: [dir('ch1', 5000), dir('ch2', 6000)],
+      ch1: [img('a')],
+      ch2: [img('b')]
+    })
+    const listed = log.filter((x) => x[0] === 'list').map((x) => x[1])
+    // wrapper 探测跳过下钻 + writeSeries 章节命中跳过 → 只有根与 w 两轮列表
+    expect(listed).toEqual(['root', 'w'])
+    // 命中章节沿用库内页数并回写 mtime
+    const reused = vi
+      .mocked(upsertChapter)
+      .mock.calls.map((c) => c[0])
+      .find((p) => String(p.path).includes('f-ch1'))
+    expect(reused?.page_count).toBe(3)
+    expect(reused?.mtime).toBe(5000)
+  })
+
+  it('增量：mtime 变化的子目录仍下钻重列；多系列布局不受增量影响', async () => {
+    vi.mocked(seriesPathExists).mockReturnValue(true)
+    vi.mocked(getChapterMetaIfUnchanged).mockImplementation((_p, _s, m) => (m === 5000 ? 3 : null))
+    // ch1 命中、ch2 的 mtime 已变（9999 对不上）→ wrapper 探测仍要列子目录
+    const log1 = await run({
+      root: [dir('w')],
+      w: [dir('ch1', 5000), dir('ch2', 9999)],
+      ch1: [img('a')],
+      ch2: [img('b')]
+    })
+    expect(log1.filter((x) => x[0] === 'list').map((x) => x[1])).toEqual(['root', 'w', 'ch1', 'ch2'])
+
+    // 多系列布局：根系列不在库 → 即便子目录全命中也按原逻辑下钻判定
+    vi.mocked(seriesPathExists).mockReturnValue(false)
+    const log2 = await run({
+      root: [dir('w2')],
+      w2: [dir('ch1', 5000), dir('ch2', 6000)],
+      ch1: [img('a')],
+      ch2: [img('b')]
+    })
+    expect(log2.filter((x) => x[0] === 'list').map((x) => x[1])).toEqual(['root', 'w2', 'ch1', 'ch2'])
   })
 })
