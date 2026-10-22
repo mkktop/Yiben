@@ -7,11 +7,13 @@ vi.mock('../db', () => ({
   upsertChapter: vi.fn(() => 1),
   replaceChapterPages: vi.fn(),
   deleteChaptersNotIn: vi.fn(() => []),
-  retireSeriesNotIn: vi.fn(() => ({ missing: 0, deletedSeries: [], deletedChapters: [] }))
+  retireSeriesNotIn: vi.fn(() => ({ missing: 0, deletedSeries: [], deletedChapters: [] })),
+  rebuildFts: vi.fn()
 }))
 vi.mock('../thumbnail', () => ({ removeSeriesArtifacts: vi.fn() }))
 vi.mock('../pageThumb', () => ({ removePageThumbs: vi.fn() }))
 
+import { rebuildFts } from '../db'
 import { scanCloudLibrary, type CloudScanProgress } from './scanner'
 
 type LogItem = ['list', string] | ['progress', CloudScanProgress]
@@ -55,9 +57,12 @@ const run = async (tree: Record<string, CloudEntry[]>) => {
 beforeEach(() => vi.clearAllMocks())
 
 describe('云端扫描进度事件', () => {
-  it('多系列：先发启动事件再联网，分类 i/N，标题细化到章', async () => {
+  it('多系列：先发启动事件再联网，分类 i/N，标题细化到章，收尾重建搜索索引', async () => {
     const log = await run(TREE)
     const events = log.filter((x) => x[0] === 'progress').map((x) => x[1])
+
+    // 扫出了系列就必须重建 FTS，否则云盘系列在搜索里永远缺席
+    expect(rebuildFts).toHaveBeenCalled()
 
     // 启动事件必须是第一条日志（先于根目录的任何网络列举），浮标才能立刻出现
     expect(log[0]).toEqual(['progress', { libraryId: 7, current: 0, total: 0, title: '正在读取云端目录', phase: 'reading' }])

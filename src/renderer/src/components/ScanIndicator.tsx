@@ -1,6 +1,7 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useScanStore, useDataStore } from '@/stores/data'
 import { useToastStore } from '@/stores/toast'
+import { createScanRefresher } from '@/lib/scanRefresh'
 
 /** 扫描错误/告警提示的停留时间 */
 const NOTICE_MS = 8000
@@ -17,6 +18,7 @@ export function ScanIndicator() {
   const bump = useDataStore((s) => s.bump)
   const push = useToastStore((s) => s.push)
   const close = useToastStore((s) => s.close)
+  const refresh = useMemo(() => createScanRefresher(bump), [bump])
 
   useEffect(() => {
     const offProgress = window.yudu.events.onScanProgress((p) => {
@@ -24,14 +26,15 @@ export function ScanIndicator() {
       setProgress(payload)
       // 新一轮扫描开始：清掉上一轮的提示
       if (payload.phase !== 'done') setNotice(null)
-      if (payload.phase === 'done') bump()
+      // 扫描中节流刷新书架（新入库系列边扫边出），done 终态必刷
+      refresh(payload.phase)
     })
     const offNotice = window.yudu.events.onScanNotice((n) => setNotice(n))
     return () => {
       offProgress()
       offNotice()
     }
-  }, [setProgress, setNotice, bump])
+  }, [setProgress, setNotice, refresh])
 
   useEffect(() => {
     if (!notice) {

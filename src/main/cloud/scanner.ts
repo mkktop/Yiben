@@ -2,6 +2,7 @@ import { join } from 'path'
 import {
   deleteChaptersNotIn,
   getLibrary,
+  rebuildFts,
   replaceChapterPages,
   retireSeriesNotIn,
   upsertChapter,
@@ -345,6 +346,9 @@ export async function scanCloudLibrary(
     if (retired.deletedSeries.length > 0) {
       await removeSeriesArtifacts(retired.deletedSeries, retired.deletedChapters)
     }
+    // 书架列表直读 series 表不受影响，但搜索走 series_fts MATCH——
+    // 与本地扫描收尾对齐，否则云盘扫出的系列要等下次本地扫描才可搜
+    rebuildFts()
   }
   return { series: keepSeries.length, chapters: chapterTotal, missing }
 }
