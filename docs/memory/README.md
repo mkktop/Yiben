@@ -13,6 +13,7 @@
 - [天翼下载直链实体转义](cloud189-download-url-entity-escape.md) — 直链含 `&amp;` 不解码 fetch 必 403；`familyId` 缺失 400；启动竞态需 `waitCloudReady`
 - [天翼直链支持 Range 206](cloud189-range-206-supported.md) — 云端 zip 免整包直读的实测前提；remoteZip 仅在未缓存时启用
 - [天翼按家庭容量接口](cloud189-family-capacity-endpoint.md) — `api.cloud.189.cn/open/.../getUserInfo.action?familyId`；探针脚本无窗口验证
+- [云盘扫描进度事件契约](cloud-scan-progress-contract.md) — done 只由 rescan 发；首条进度先于联网；系列级计数 + 章节级标题
 
 ### 阅读器
 

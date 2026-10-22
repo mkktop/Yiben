@@ -283,7 +283,7 @@ export function registerIpc(): void {
     if (!lib) throw new Error('所属书库不存在')
     if (lib.kind !== 'local') throw new Error('云端书库请使用书架页的「重新扫描」整库刷新')
     return runExclusiveScan(async () => {
-      broadcast('scan:progress', { libraryId: lib.id, phase: 'reading', title: series.title })
+      broadcast('scan:progress', { libraryId: lib.id, phase: 'reading', title: series.title, current: 0, total: 1 })
       try {
         for (const entry of [series, ...mergeSources(id)]) {
           await scanOneLocalSeries(lib.id, {

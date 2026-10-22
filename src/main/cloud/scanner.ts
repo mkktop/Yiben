@@ -84,6 +84,9 @@ export async function scanCloudLibrary(
   onProgress?: (p: CloudScanProgress) => void
 ): Promise<{ series: number; chapters: number; missing?: number }> {
   const { libraryId, cloudFolderId, familyId, listAll, cacheDir, scheme } = deps
+  // 根目录递归遍历（分页拉取 + 逐个下钻分类 + 限流闸串行）是整条扫描里最慢的
+  // 一段，先发一条让浮标立刻出现，否则大库开头十几分钟没有任何反馈
+  onProgress?.({ libraryId, current: 0, total: 0, title: '正在读取云端目录', phase: 'reading' })
   const cache = new Map<string, CloudEntry[]>()
   const list = async (id: string): Promise<CloudEntry[]> => {
     let v = cache.get(id)
@@ -100,7 +103,14 @@ export async function scanCloudLibrary(
 
   // 根下文件夹分类：volume=卷文件夹 wrapper=同名嵌套等包装层 series=独立作品
   const dirKind = new Map<string, 'volume' | 'wrapper' | 'series'>()
-  for (const d of rootDirs) {
+  for (const [i, d] of rootDirs.entries()) {
+    onProgress?.({
+      libraryId,
+      current: i,
+      total: rootDirs.length,
+      title: `分析目录：${d.name}`,
+      phase: 'reading'
+    })
     const children = await list(d.id)
     if (isVolumeChildren(children)) {
       dirKind.set(d.id, 'volume')
@@ -124,15 +134,21 @@ export async function scanCloudLibrary(
   const keepSeries: string[] = []
   let chapterTotal = 0
 
-  /** 写入一个系列；空系列（无有效章节）返回 false 不入库 */
-  const writeSeries = async (input: {
-    title: string
-    folderPath: string
-    isSingleFile: boolean
-    chapters: ChapterInput[]
-  }): Promise<boolean> => {
+  /** 写入一个系列；空系列（无有效章节）返回 false 不入库。
+   *  onChapter：逐章校验（目录章节要列举一次数页数）开始时回调，
+   *  供调用方把进度标题细化到「系列名（第 i/n 章）」，多卷系列不再长时间停在整系列一格 */
+  const writeSeries = async (
+    input: {
+      title: string
+      folderPath: string
+      isSingleFile: boolean
+      chapters: ChapterInput[]
+    },
+    onChapter?: (chapterIndex: number, chapterTotal: number) => void
+  ): Promise<boolean> => {
     const chapters: ChapterInput[] = []
-    for (const ch of input.chapters) {
+    for (const [i, ch] of input.chapters.entries()) {
+      onChapter?.(i, input.chapters.length)
       if (ch.isDir) {
         const pages = (await list(ch.cloudId)).filter((e) => !e.isDir && isImageFile(e.name))
         if (pages.length > 0) chapters.push(ch)
@@ -234,12 +250,25 @@ export async function scanCloudLibrary(
       }
     }
     const title = getLibrary(libraryId)?.name ?? '云端系列'
-    await writeSeries({
-      title,
-      folderPath: `${scheme}://${cloudFolderId}`,
-      isSingleFile: false,
-      chapters
-    })
+    await writeSeries(
+      {
+        title,
+        folderPath: `${scheme}://${cloudFolderId}`,
+        isSingleFile: false,
+        chapters
+      },
+      // 单系列模式整个库根就是一部作品，章节序号直接当进度计数用
+      chapters.length > 1
+        ? (ci, ct) =>
+            onProgress?.({
+              libraryId,
+              current: ci,
+              total: ct,
+              title: `${title}（${ci + 1}/${ct}）`,
+              phase: 'reading'
+            })
+        : undefined
+    )
   } else {
     const seriesDirs = rootDirs
     const inputs: Array<{ title: string; entry: CloudEntry; single: boolean }> = [
@@ -247,16 +276,14 @@ export async function scanCloudLibrary(
       ...rootArchives.map((f) => ({ title: stripArchiveExt(f.name), entry: f, single: true }))
     ]
 
-    let done = 0
-    for (const input of inputs) {
+    for (const [seriesIndex, input] of inputs.entries()) {
       onProgress?.({
         libraryId,
-        current: done,
+        current: seriesIndex,
         total: inputs.length,
         title: input.title,
         phase: 'reading'
       })
-      done++
 
       if (input.single) {
         await writeSeries({
@@ -285,12 +312,26 @@ export async function scanCloudLibrary(
         if (files.some((f) => isImageFile(f.name))) {
           chapters.push({ cloudId: input.entry.id, name: input.title, size: 0, isDir: true })
         }
-        await writeSeries({
-          title: input.title,
-          folderPath: `${scheme}://${input.entry.id}`,
-          isSingleFile: false,
-          chapters
-        })
+        await writeSeries(
+          {
+            title: input.title,
+            folderPath: `${scheme}://${input.entry.id}`,
+            isSingleFile: false,
+            chapters
+          },
+          // 进度条仍按系列推进（current/total 口径不变），标题细化到章，
+          // 避免同一条目内两套计数互相打架
+          chapters.length > 1
+            ? (ci, ct) =>
+                onProgress?.({
+                  libraryId,
+                  current: seriesIndex,
+                  total: inputs.length,
+                  title: `${input.title}（${ci + 1}/${ct}）`,
+                  phase: 'reading'
+                })
+            : undefined
+        )
       }
     }
   }
