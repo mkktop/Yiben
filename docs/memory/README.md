@@ -29,6 +29,7 @@
 ### 验证与调试
 
 - [无头验证配方](yiben-headless-verify-recipe.md) — 隔离 userData 跑 selftest；截图正斜杠；调试钩子 `is.dev` 门控；断言优先读 DB/vitest
+- [WebDAV 挂载身份不变量](yiben-webdav-mount-identity.md) — identity=sha256(url\0+用户名)；换密码不改身份；挂子目录按子目录 URL 计；改地址必须同步 path
 - [Electron 调试配方](electron-safeStorage-decrypt-recipe.md) — 外部脚本解密凭证要先指 userData；`YUDU_A11Y=1` 暴露无障碍树
 - [115 验证环境限制](yiben-115-verify-env-limits.md) — 开发机海外 IP 部分被 115 封；中国网络实机才能全链路验证
 
