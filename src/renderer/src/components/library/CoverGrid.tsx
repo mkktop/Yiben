@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { BookOpen, Check } from 'lucide-react'
 import type { Series } from '@shared/types'
@@ -29,11 +29,15 @@ export function CoverCard({
   const navigate = useNavigate()
   const checked = selection?.selected.has(series.id) ?? false
   const reading = progress !== undefined && progress > 0 && progress < 1
+  const started = (series.started_chapters ?? series.read_chapters ?? 0) > 0
+  const status = read ? '已读完' : started ? '在读' : '未读'
   return (
     <button
       onClick={() => (selection ? selection.onToggle(series.id) : navigate(`/series/${series.id}`))}
       className="group w-full text-left"
       title={series.title}
+      aria-pressed={selection ? checked : undefined}
+      data-series-card={series.id}
     >
       <div
         className={cn(
@@ -64,12 +68,13 @@ export function CoverCard({
         )}
         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent p-2.5 pt-8 opacity-60 transition-opacity duration-200 group-hover:opacity-100">
           <p className="line-clamp-2 text-xs font-medium text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.6)]">
-            {series.title}
+            {series.total_chapters !== undefined && `共 ${series.total_chapters} 话 · `}{status}
+            {reading && ` ${Math.min(99, Math.max(1, Math.round(progress * 100)))}%`}
           </p>
         </div>
         {/* 已读完徽章：非选择模式才显示（右上角让位给勾选框） */}
         {!selection && read && (
-          <span className="absolute right-2 top-2 z-10 grid size-5 place-items-center rounded-full bg-primary text-primary-foreground shadow-sm">
+          <span aria-label="已读完" className="absolute right-2 top-2 z-10 grid size-5 place-items-center rounded-full bg-primary text-primary-foreground shadow-sm">
             <Check className="size-3" />
           </span>
         )}
@@ -84,7 +89,7 @@ export function CoverCard({
       <p className="mt-2 line-clamp-1 text-sm font-medium transition-colors duration-200 group-hover:text-primary">
         {series.title}
       </p>
-      <p className="line-clamp-1 text-xs text-muted-foreground">{series.author ?? ''}</p>
+      <p className="h-4 line-clamp-1 text-xs text-muted-foreground">{series.author ?? ''}</p>
     </button>
   )
 }
@@ -134,14 +139,14 @@ export function EmptyHint({
 }
 
 /**
- * 从系列级进度聚合字段（read_chapters / total_chapters，series:list 与 home:recent 返回）
- * 推导封面徽章/进度条状态：全部读完 → read，部分读完 → progress。
+ * 已读徽章由完成话数决定；进度包含未完话的页码，未知页数仍可显示在读文案。
  */
 export function seriesStatus(s: Series): { read?: boolean; progress?: number } {
   const total = s.total_chapters ?? 0
   const read = s.read_chapters ?? 0
-  if (total <= 0 || read <= 0) return {}
-  return { read: read >= total, progress: read / total }
+  if (total <= 0) return {}
+  const progress = (s.chapter_progress ?? read) / total
+  return { read: read >= total, progress: read >= total ? 1 : Math.min(0.99, progress) }
 }
 
 interface CoverGridProps {
@@ -150,22 +155,24 @@ interface CoverGridProps {
   emptyHint?: ReactNode
   /** 批量选择模式：传入后点封面变为切换选中 */
   selection?: GridSelection | null
+  /** 搜索及筛选组合各自记住位置，切换条件不会沿用另一份列表的位置。 */
+  memoryKey?: string
 }
 
 const MIN_COL_WIDTH = 172
-const ROW_ESTIMATE = 262
 
-/** 按路由记忆滚动位置：从详情页返回书架时回到离开时的位置（虚拟列表换页即重挂） */
+/** 按搜索和筛选组合记忆滚动位置，返回详情前的那份列表。 */
 const scrollMemory = new Map<string, number>()
 
 /** 封面墙：按容器宽度定列数，按行虚拟滚动 */
-export function CoverGrid({ series, loading, emptyHint, selection }: CoverGridProps) {
+export function CoverGrid({ series, loading, emptyHint, selection, memoryKey = 'library' }: CoverGridProps) {
   const parentRef = useRef<HTMLDivElement>(null)
-  const [width, setWidth] = useState(1200)
-  const location = useLocation()
+  const [width, setWidth] = useState(0)
+  const savedOffset = useRef(scrollMemory.get(memoryKey) ?? 0)
+  const restoredRef = useRef(false)
 
   // 列数必须跟着窗口宽度走：render 期读 clientWidth 拿到的是首帧的旧值，且缩放后不会重算
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = parentRef.current
     if (!el) return
     const update = (): void => setWidth(el.clientWidth)
@@ -176,6 +183,8 @@ export function CoverGrid({ series, loading, emptyHint, selection }: CoverGridPr
   }, [])
 
   const columns = Math.max(2, Math.floor((width - 16) / MIN_COL_WIDTH))
+  // 封面 3:4、列距 20px，文字两行与下方间距共 68px；固定行高避免恢复时估算值二次跳动。
+  const rowHeight = ((width - (columns - 1) * 20) / columns) * 4 / 3 + 68
 
   const count = loading ? 18 : (series?.length ?? 0)
   const rows = Math.ceil(count / columns)
@@ -183,48 +192,38 @@ export function CoverGrid({ series, loading, emptyHint, selection }: CoverGridPr
   const rowVirtualizer = useVirtualizer({
     count: rows,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_ESTIMATE,
-    // 实际行高（3:4 封面 + 两行文字 + 行距）与估算值偏差不小：挂 ref 实测，
-    // 滚动条长度与跳页定位才准
-    measureElement: (el) => el.getBoundingClientRect().height,
+    estimateSize: () => rowHeight,
     overscan: 2
   })
 
-  // 返回本页时恢复滚动位置；数据未到齐前恢复不到位，每帧重试直到成功
-  const restoredRef = useRef(false)
-  useEffect(() => {
+  // 列数不变时缩放也会改变封面高度，清掉旧的行尺寸缓存。
+  useLayoutEffect(() => rowVirtualizer.measure(), [rowVirtualizer, rowHeight])
+
+  // 等真实数据和实测行高就绪后恢复；卸载时 ref 已清空，位置改在滚动事件中保存。
+  useLayoutEffect(() => {
     const el = parentRef.current
-    if (!el) return
-    const saved = scrollMemory.get(location.pathname) ?? 0
-    if (!restoredRef.current && saved > 0 && count > 0) {
-      el.scrollTop = saved
-      if (el.scrollTop > 0) restoredRef.current = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [count, location.pathname])
-  useEffect(
-    () => () => {
-      const el = parentRef.current
-      if (el) scrollMemory.set(location.pathname, el.scrollTop)
-    },
-    [location.pathname]
-  )
+    if (!el || loading || width === 0 || restoredRef.current) return
+    const frame = requestAnimationFrame(() => {
+      el.scrollTop = savedOffset.current
+      restoredRef.current = true
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [loading, count, width])
 
-  if (!loading && count === 0) {
-    return <EmptyHint>{emptyHint ?? '这里还是空的'}</EmptyHint>
-  }
-
-  const items = loading ? Array.from({ length: 18 }).map(() => null) : series!
+  const items = loading ? Array.from({ length: 18 }).map(() => null) : (series ?? [])
 
   return (
-    <div ref={parentRef} className="h-full overflow-y-auto">
+    <div ref={parentRef} data-cover-grid className="h-full overflow-y-auto" onScroll={(event) => {
+      if (restoredRef.current && !loading) scrollMemory.set(memoryKey, event.currentTarget.scrollTop)
+    }}>
+      {!loading && count === 0 && <EmptyHint>{emptyHint ?? '这里还是空的'}</EmptyHint>}
       <div style={{ height: rowVirtualizer.getTotalSize(), position: 'relative' }}>
         {rowVirtualizer.getVirtualItems().map((row) => (
           <div
             key={row.key}
             data-index={row.index}
-            ref={rowVirtualizer.measureElement}
             style={{
+              height: rowHeight,
               position: 'absolute',
               top: 0,
               left: 0,

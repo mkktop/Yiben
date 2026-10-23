@@ -129,6 +129,49 @@ function setTestWindow(width = 960, height = 640) {
   }
 }
 
+function seedLibraryFixture() {
+  const db = new Database(path.join(profile, 'yudu.db'))
+  const now = Date.now()
+  const coverSource = fs.readdirSync(path.join(profile, 'thumbs')).find((name) => /^series-\d+\.webp$/.test(name))
+  const result = { longTitle: '交互回归：长篇作品' }
+  try {
+    db.transaction(() => {
+      const libraryId = Number(db.prepare('INSERT INTO libraries (name,path,kind,created_at) VALUES (?,?,?,?)')
+        .run('交互回归库', path.join(root, 'library-fixture'), 'local', now).lastInsertRowid)
+      const addSeries = (title) => {
+        const id = Number(db.prepare('INSERT INTO series (library_id,title,folder_path,added_at) VALUES (?,?,?,?)')
+          .run(libraryId, title, path.join(root, title), now).lastInsertRowid)
+        if (coverSource) fs.copyFileSync(path.join(profile, 'thumbs', coverSource), path.join(profile, 'thumbs', `series-${id}.webp`))
+        return id
+      }
+      const addChapter = (id, title, order, count = 10, volume = null) => Number(db.prepare(
+        'INSERT INTO chapters (series_id,title,sort_index,path,kind,page_count,volume) VALUES (?,?,?,?,?,?,?)'
+      ).run(id, title, order, path.join(root, `fixture-${id}-${order}.zip`), 'zip', count, volume).lastInsertRowid)
+      const save = db.prepare('INSERT INTO progress (chapter_id,page,completed,updated_at) VALUES (?,?,?,?)')
+      for (let index = 0; index < 80; index++) addChapter(addSeries(`UX ${String(index).padStart(3, '0')}`), '展示章节', 0)
+      result.nextSeries = addSeries('交互回归：读完首话')
+      const first = addChapter(result.nextSeries, '第一话', 0)
+      addChapter(result.nextSeries, '第二话', 1)
+      save.run(first, 9, 1, now + 2)
+      result.unknownSeries = addSeries('交互回归：未知页数')
+      save.run(addChapter(result.unknownSeries, '未知页数章节', 0, 0), 2, 0, now + 1)
+      result.longSeries = addSeries(result.longTitle)
+      for (let index = 0; index < 120; index++) {
+        const id = addChapter(result.longSeries, `章节检索 ${String(index + 1).padStart(3, '0')}`, index, 10, String(Math.floor(index / 20) + 1))
+        if (index === 85) {
+          result.currentChapter = id
+          save.run(id, 4, 0, now + 3)
+        }
+      }
+      const shelf = Number(db.prepare('INSERT INTO shelves (name,sort) VALUES (?,?)').run('交互回归书架', 0).lastInsertRowid)
+      db.prepare('INSERT INTO series_shelves (series_id,shelf_id,added_at) VALUES (?,?,?)').run(result.longSeries, shelf, now)
+    })()
+  } finally {
+    db.close()
+  }
+  return result
+}
+
 async function main() {
   await run(process.execPath, ['scripts/make-fixture.js'], { FIX_ROOT: fixture })
   const association = [path.join(fixture, '关联验证.cbz'), path.join(fixture, '热启动验证.cbz')]
@@ -326,6 +369,42 @@ async function main() {
     JSON.stringify(entry) === JSON.stringify(restoredWindows[0]))
   if (!stable) throw new Error(`窗口重开后尺寸累计变化：${JSON.stringify(restoredWindows)}`)
   console.log('WINDOW_RESTORE_OK', JSON.stringify(restoredWindows))
+  const libraryFixture = seedLibraryFixture()
+  setTestWindow()
+  const libraryScript = fs.readFileSync(path.join(__dirname, 'library-regression.eval.js'), 'utf8')
+    .replace('__LIBRARY_FIXTURE__', JSON.stringify(libraryFixture))
+  const libraryOutput = await run(electron, ['.', `--user-data-dir=${profile}`], {
+    YUDU_SCREENSHOT: path.join(root, 'chapter-list-960.png').replaceAll('\\', '/'),
+    YUDU_EVAL: libraryScript
+  })
+  const libraryResult = libraryOutput.split(/\r?\n/).find((line) => line.startsWith('[eval] '))
+  if (!libraryResult || libraryResult.includes('EVAL_ERROR') || !JSON.parse(libraryResult.slice(7)).success)
+    throw new Error(libraryOutput)
+  console.log('LIBRARY_DOM_OK', libraryResult.slice(7))
+
+  // 故障注入只存在于临时入口；应用本身不增加测试接口。
+  const faultEntry = path.join(root, 'home-fault.cjs')
+  fs.writeFileSync(faultEntry, `
+const { ipcMain } = require('electron')
+const handle = ipcMain.handle.bind(ipcMain)
+const failed = new Set()
+ipcMain.handle = (channel, listener) => handle(channel, (...args) => {
+  if ((channel === 'home:recent' || channel === 'home:continue') && !failed.has(channel)) {
+    failed.add(channel)
+    throw new Error('模拟首页加载失败')
+  }
+  return listener(...args)
+})
+require(${JSON.stringify(path.resolve(__dirname, '../out/main/index.js'))})
+`)
+  const homeErrorOutput = await run(electron, [faultEntry, `--user-data-dir=${profile}`], {
+    YUDU_SCREENSHOT: path.join(root, 'home-recovered.png').replaceAll('\\', '/'),
+    YUDU_EVAL: fs.readFileSync(path.join(__dirname, 'home-error-regression.eval.js'), 'utf8')
+  })
+  const homeErrorResult = homeErrorOutput.split(/\r?\n/).find((line) => line.startsWith('[eval] '))
+  if (!homeErrorResult || homeErrorResult.includes('EVAL_ERROR') || !JSON.parse(homeErrorResult.slice(7)).success)
+    throw new Error(homeErrorOutput)
+  console.log('HOME_ERROR_DOM_OK', homeErrorResult.slice(7))
   console.log('REGRESSION_ARTIFACTS', root)
 }
 main().catch((error) => {

@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
-  AlertTriangle,
   ArrowLeft,
   BookOpen,
   CheckCircle2,
   CheckCheck,
-  Circle,
   CloudDownload,
   Download,
   FolderInput,
@@ -25,11 +23,12 @@ import { Card, CardBody, CardHeader } from '@/components/ui/card'
 import { Dialog } from '@/components/ui/dialog'
 import { useAsync } from '@/hooks/useAsync'
 import { useDataStore } from '@/stores/data'
+import { ChapterList } from '@/components/ChapterList'
+import { chapterFraction } from '@shared/reading'
 import { CoverImage } from '@/components/library/CoverImage'
 import { SeriesMaintenance } from '@/components/SeriesMaintenance'
 import { EmptyHint } from '@/components/library/CoverGrid'
 import type {
-  ChapterWithProgress,
   PrefetchDone,
   PrefetchProgress,
   Series,
@@ -48,23 +47,6 @@ const LANG_NAMES: Record<string, string> = {
   ja: '日语',
   ko: '韩语',
   en: '英语'
-}
-
-/** 章节按卷号分组（相邻同卷聚合；volume 为空的章节不显示组头） */
-function volumeGroups(chapters: ChapterWithProgress[]): Array<{
-  volume: string | null
-  items: Array<{ c: ChapterWithProgress; i: number }>
-}> {
-  const groups: Array<{
-    volume: string | null
-    items: Array<{ c: ChapterWithProgress; i: number }>
-  }> = []
-  chapters.forEach((c, i) => {
-    const last = groups[groups.length - 1]
-    if (last && last.volume === c.volume) last.items.push({ c, i })
-    else groups.push({ volume: c.volume, items: [{ c, i }] })
-  })
-  return groups
 }
 
 /** 手动编辑元数据：保存后打 meta_edited 标记，重扫不会覆盖 */
@@ -519,6 +501,8 @@ export function SeriesPage() {
 
   const totalChapters = chapters.length
   const readChapters = chapters.filter((c) => c.completed === 1).length
+  const progress = chapters.reduce((sum, chapter) => sum + chapterFraction(chapter.read_page, chapter.page_count, chapter.completed === 1), 0)
+  const percent = totalChapters > 0 ? Math.min(readChapters === totalChapters ? 100 : 99, Math.round(progress / totalChapters * 100)) : 0
   const { chapter: nextChapter, started } = seriesReading(chapters)
   const isCloud = detail.libraryKind !== 'local'
 
@@ -612,18 +596,18 @@ export function SeriesPage() {
             <div className="mt-5 max-w-sm" data-series-progress>
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs tabular-nums text-muted-foreground">
                 <span>已读 {readChapters} / {totalChapters} 话</span>
-                <span>{totalChapters > 0 ? Math.round((readChapters / totalChapters) * 100) : 0}%</span>
+                <span>{percent}%</span>
               </div>
               <div
                 role="progressbar"
                 aria-label="系列阅读进度"
                 aria-valuemin={0}
                 aria-valuemax={totalChapters || 1}
-                aria-valuenow={readChapters}
-                aria-valuetext={'共 ' + totalChapters + ' 话，已读 ' + readChapters + ' 话'}
+                aria-valuenow={progress}
+                aria-valuetext={'共 ' + totalChapters + ' 话，已读完 ' + readChapters + ' 话，阅读进度 ' + percent + '%'}
                 className="h-1.5 overflow-hidden rounded-full bg-muted"
               >
-                <div className="h-full rounded-full bg-primary" style={{ width: (totalChapters > 0 ? (readChapters / totalChapters) * 100 : 0) + '%' }} />
+                <div className="h-full rounded-full bg-primary" style={{ width: percent + '%' }} />
               </div>
             </div>
 
@@ -659,95 +643,8 @@ export function SeriesPage() {
             }
           />
           <CardBody>
-            {volumeGroups(chapters).map((g, gi) => (
-              <div key={`${g.volume ?? '_'}-${gi}`} className="space-y-0.5">
-                {g.volume !== null && (
-                  <div className="rounded-md bg-muted/60 px-3 py-1.5 text-xs font-medium text-muted-foreground">
-                    第 {g.volume} 卷
-                  </div>
-                )}
-                {g.items.map(({ c, i }) => {
-                  const done = c.completed === 1
-                  const reading = !done && (c.read_page ?? 0) > 0
-                  const pct =
-                    c.page_count > 0
-                      ? Math.round((((c.read_page ?? 0) + 1) / c.page_count) * 100)
-                      : 0
-                  return (
-                    <div
-                      key={c.id}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => navigate(`/reader/${c.id}`)}
-                      onKeyDown={(e) => {
-                        // 已读勾选按钮有独立动作，不能让它的回车冒泡成打开章节。
-                        if (e.target !== e.currentTarget) return
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault()
-                          navigate(`/reader/${c.id}`)
-                        }
-                      }}
-                      className="flex w-full cursor-pointer items-center gap-4 rounded-lg px-3 py-3 text-left transition-colors hover:bg-accent/60 focus-visible:outline-2 focus-visible:outline-ring"
-                    >
-                      <span className="w-10 shrink-0 text-center text-xs tabular-nums text-muted-foreground">
-                        {c.number ?? i + 1}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate text-sm">{c.title}</span>
-                      {c.scan_error && c.kind !== 'pdf' ? (
-                        // 损坏的压缩包等：悬浮显示扫描失败原因，每轮扫描会自动重试
-                        <span
-                          className="flex shrink-0 items-center gap-1 text-xs text-destructive"
-                          title={c.scan_error}
-                        >
-                          <AlertTriangle className="size-3.5" />
-                          扫描失败
-                        </span>
-                      ) : done ? (
-                        <span className="shrink-0 text-xs text-muted-foreground">已读完</span>
-                      ) : reading ? (
-                        c.page_count > 0 ? (
-                          <div className="flex w-28 shrink-0 items-center gap-2">
-                            <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
-                              <div
-                                className="h-full rounded-full bg-primary"
-                                style={{ width: `${pct}%` }}
-                              />
-                            </div>
-                            <span className="text-[11px] tabular-nums text-muted-foreground">
-                              {pct}%
-                            </span>
-                          </div>
-                        ) : (
-                          // 页数未知（PDF 尚未打开过）：精确到「第几页」比一个恒为 0% 的进度条有用
-                          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                            第 {(c.read_page ?? 0) + 1} 页
-                          </span>
-                        )
-                      ) : (
-                        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                          {c.kind === 'pdf' && c.page_count === 0 ? 'PDF' : `${c.page_count} 页`}
-                        </span>
-                      )}
-                      {/* 已读勾选：点图标只改已读状态，不进入阅读器 */}
-                      <button
-                        className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground/50 hover:bg-accent hover:text-foreground"
-                        title={done ? '标记为未读' : '标记为已读'}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          void run(() => window.yudu.progress.setCompleted(c.id, !done))
-                        }}
-                      >
-                        {done ? (
-                          <CheckCircle2 className="size-4 text-primary" />
-                        ) : (
-                          <Circle className="size-4" />
-                        )}
-                      </button>
-                    </div>
-                  )
-                })}
-              </div>
-            ))}
+            <ChapterList key={series.id} chapters={chapters} currentId={nextChapter?.id ?? null}
+              onToggleCompleted={(chapter) => void run(() => window.yudu.progress.setCompleted(chapter.id, chapter.completed !== 1))} />
           </CardBody>
         </Card>
 

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   FolderPlus,
   Library as LibraryIcon,
@@ -27,6 +27,7 @@ const filters: Array<{ key: SeriesFilter; label: string }> = [
   { key: 'all', label: '全部' },
   { key: 'unread', label: '未读' },
   { key: 'reading', label: '在读' },
+  { key: 'completed', label: '已读完' },
   { key: 'read', label: '最近阅读' },
   { key: 'recent', label: '最近添加' }
 ]
@@ -141,33 +142,42 @@ export function LibraryPage() {
   const query = useDataStore((s) => s.query)
   // 搜索防抖：每键一次 series.list IPC 会反复序列化数千条；输入框保持即时回显
   const debouncedQuery = useDebounced(query, 200)
-  const [filter, setFilter] = useState<SeriesFilter>('all')
+  const filter = useDataStore((s) => s.libraryFilter)
+  const setFilter = useDataStore((s) => s.setLibraryFilter)
   /** 虚拟书架筛选；null = 全部 */
-  const [shelfId, setShelfId] = useState<number | null>(null)
+  const shelfId = useDataStore((s) => s.libraryShelfId)
+  const setShelfId = useDataStore((s) => s.setLibraryShelfId)
   const [scanning, setScanning] = useState(false)
   const [managing, setManaging] = useState(false)
   const [selectMode, setSelectMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [confirmBatch, setConfirmBatch] = useState(false)
   const [batchError, setBatchError] = useState('')
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const gridKey = JSON.stringify([debouncedQuery.trim(), filter, shelfId])
 
   const { data: libraries } = useAsync<LibraryRow[]>(
     () => window.yudu.libraries.list(),
     [version]
   )
   const { data: shelves } = useAsync<ShelfInfo[]>(() => window.yudu.shelves.list(), [version])
-  const { data: series, error: seriesError } = useAsync<Series[]>(
-    () =>
-      window.yudu.series.list({
+  const { data: result, error: seriesError } = useAsync<{ key: string; items: Series[] }>(
+    async () => ({
+      key: gridKey,
+      items: await window.yudu.series.list({
         query: debouncedQuery.trim() || undefined,
         filter,
         shelfId: shelfId ?? undefined,
         // 多取一条用来判断是否被截断
         limit: MAX_SERIES + 1
-      }),
+      })
+    }),
     [version, debouncedQuery, filter, shelfId]
   )
+  const series = result?.key === gridKey ? result.items : undefined
+
+  useEffect(() => {
+    if (shelves && shelfId !== null && !shelves.some((shelf) => shelf.id === shelfId)) setShelfId(null)
+  }, [shelves, shelfId, setShelfId])
 
   const truncated = (series?.length ?? 0) > MAX_SERIES
   const visible = series && truncated ? series.slice(0, MAX_SERIES) : series
@@ -225,9 +235,9 @@ export function LibraryPage() {
   return (
     <div className="flex h-full flex-col">
       <div className="mx-auto w-full max-w-[1400px] space-y-5 p-8 pb-4">
-        <header className="flex items-center justify-between">
+        <header className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="font-serif text-2xl font-semibold">书架</h1>
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
             {selectMode ? (
               <>
                 <span className="text-sm text-muted-foreground">已选 {selected.size} 部</span>
@@ -291,10 +301,10 @@ export function LibraryPage() {
           </div>
         </header>
 
-        <div className="flex items-center justify-between">
-          <div className="flex gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap gap-2">
             {filters.map((f) => (
-              <button key={f.key} onClick={() => setFilter(f.key)} className={chipClass(filter === f.key)}>
+              <button key={f.key} aria-pressed={filter === f.key} onClick={() => setFilter(f.key)} className={chipClass(filter === f.key)}>
                 {f.label}
               </button>
             ))}
@@ -311,12 +321,13 @@ export function LibraryPage() {
         {/* 虚拟书架分组（SeriesPage 的「书架与标签」里创建）；与类型筛选叠加生效 */}
         {(shelves?.length ?? 0) > 0 && (
           <div className="flex flex-wrap items-center gap-2">
-            <button onClick={() => setShelfId(null)} className={chipClass(shelfId === null)}>
+            <button aria-pressed={shelfId === null} onClick={() => setShelfId(null)} className={chipClass(shelfId === null)}>
               全部书架
             </button>
             {shelves!.map((s) => (
               <button
                 key={s.id}
+                aria-pressed={shelfId === s.id}
                 onClick={() => setShelfId(shelfId === s.id ? null : s.id)}
                 className={chipClass(shelfId === s.id)}
               >
@@ -338,7 +349,7 @@ export function LibraryPage() {
         )}
       </div>
 
-      <div ref={scrollRef} className="min-h-0 flex-1 px-8 pb-8">
+      <div className="min-h-0 flex-1 px-8 pb-8">
         {!hasLibraries ? (
           <EmptyHint
             hint="把本地漫画文件夹收进来，或在左侧「网盘」添加云端目录"
@@ -348,6 +359,8 @@ export function LibraryPage() {
           </EmptyHint>
         ) : (
           <CoverGrid
+            key={gridKey}
+            memoryKey={gridKey}
             series={visible}
             loading={!series && !seriesError}
             emptyHint="没有匹配的书目，换个关键词或筛选条件试试"

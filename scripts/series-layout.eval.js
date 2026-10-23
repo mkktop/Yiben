@@ -83,7 +83,8 @@
         ? infoBounds.top >= chapterBounds.bottom
         : infoBounds.left >= chapterBounds.right && Math.abs(infoBounds.top - chapterBounds.top) < 2)
       assert(`${label}系列进度与章节统计一致`, Number(hero.querySelector('[role="progressbar"]').getAttribute('aria-valuemax')) === initial.chapters.length &&
-        Number(hero.querySelector('[role="progressbar"]').getAttribute('aria-valuenow')) === initial.chapters.filter((item) => item.completed === 1).length)
+        Math.abs(Number(hero.querySelector('[role="progressbar"]').getAttribute('aria-valuenow')) - initial.chapters.reduce((sum, item) =>
+          sum + (item.completed === 1 ? 1 : item.read_page !== null && item.page_count > 0 ? Math.min(0.99, Math.max(0, (item.read_page + 1) / item.page_count)) : 0), 0)) < 0.0001)
     }
     const actions = [
       ['编辑信息', '编辑信息'],

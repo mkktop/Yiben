@@ -136,6 +136,38 @@ describe('continueReading（每系列取最近未完话）', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].chapter_id).toBe(e3)
   })
+
+  it('完成首话后接到尚未开始的下一话，整系列完成后退出续读', () => {
+    const id = seedSeries('接续下一话', ['首话', '次话'])
+    const [first, second] = chapterIds(id)
+    saveProgress(first, 9, true)
+    expect(continueReading(100).find((row) => row.series_id === id)).toMatchObject({
+      chapter_id: second, started: false, read_page: 0
+    })
+    saveProgress(second, 0, false)
+    expect(continueReading(100).find((row) => row.series_id === id)).toMatchObject({
+      chapter_id: second, started: true, read_page: 0
+    })
+    saveProgress(second, 9, true)
+    expect(continueReading(100).some((row) => row.series_id === id)).toBe(false)
+  })
+
+  it('续读按系列最近阅读时间排序，未读和源目录缺失系列不出现', () => {
+    const id = seedSeries('续读排序', ['第一话', '第二话'])
+    const missing = seedSeries('源目录缺失', ['失联话'])
+    const untouched = seedSeries('从未开始', ['新话'])
+    const [first, second] = chapterIds(id)
+    saveProgress(first, 0, false)
+    touch(first, 5000)
+    saveProgress(second, 9, true)
+    touch(second, 10000, 1)
+    const [lost] = chapterIds(missing)
+    saveProgress(lost, 0, false)
+    openDb().prepare('UPDATE series SET missing = ? WHERE id = ?').run(1, missing)
+    const rows = continueReading(100)
+    expect(rows.find((row) => row.series_id === id)).toMatchObject({ chapter_id: first, updated_at: 10000 })
+    expect(rows.some((row) => row.series_id === missing || row.series_id === untouched)).toBe(false)
+  })
 })
 
 describe('updateSeriesMeta（patch key 白名单）', () => {
@@ -221,5 +253,36 @@ describe('系列级进度聚合（read_chapters / total_chapters）', () => {
       total_chapters: 0,
       read_chapters: 0
     })
+  })
+})
+
+describe('系列阅读筛选与页进度', () => {
+  it('未读、在读、已读完互斥，首屏阅读与读完一话待续都属于在读', () => {
+    const id = seedSeries('状态流转', ['第一话', '第二话'])
+    const [first, second] = chapterIds(id)
+    const matches = () => ['unread', 'reading', 'completed'].filter((filter) =>
+      listSeries({ filter: filter as 'unread' | 'reading' | 'completed' }).some((row) => row.id === id))
+    expect(matches()).toEqual(['unread'])
+    saveProgress(first, 0, false)
+    expect(matches()).toEqual(['reading'])
+    expect(listSeries().find((row) => row.id === id)).toMatchObject({ started_chapters: 1, chapter_progress: 0.1 })
+    saveProgress(first, 9, true)
+    expect(matches()).toEqual(['reading'])
+    saveProgress(second, 4, false)
+    expect(listSeries().find((row) => row.id === id)).toMatchObject({ read_chapters: 1, chapter_progress: 1.5 })
+    expect(recentlyAdded(100).find((row) => row.id === id)?.chapter_progress).toBe(1.5)
+    saveProgress(second, 9, true)
+    expect(matches()).toEqual(['completed'])
+  })
+
+  it('未知页数保留在读状态但不猜比例，无章节系列不算已读完', () => {
+    const id = seedSeries('未知页数在读', ['未知话'])
+    const [chapter] = chapterIds(id)
+    openDb().prepare('UPDATE chapters SET page_count = ? WHERE id = ?').run(0, chapter)
+    saveProgress(chapter, 2, false)
+    expect(listSeries({ filter: 'reading' }).find((row) => row.id === id))
+      .toMatchObject({ started_chapters: 1, chapter_progress: 0 })
+    const empty = seedSeries('空章节状态', [])
+    expect(listSeries({ filter: 'completed' }).some((row) => row.id === empty)).toBe(false)
   })
 })

@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { join } from 'path'
 import type { ShelfInfo, TagInfo } from '../../shared/types'
+import { seriesReading } from '../../shared/reading'
 
 export interface LibraryRow {
   id: number
@@ -36,6 +37,8 @@ export interface SeriesRow {
   /** 查询时聚合（listSeries），非表列：已读完章节数 / 章节总数 */
   read_chapters?: number
   total_chapters?: number
+  started_chapters?: number
+  chapter_progress?: number
 }
 
 export interface ChapterRow {
@@ -742,16 +745,23 @@ export function countByLibrary(libraryId: number): { series: number; chapters: n
 
 // ---------- 查询 ----------
 
-/** 系列级进度聚合列（listSeries / recentlyAdded 共用）：章节总数 + 已读完章节数 */
+/** 系列级进度聚合：完成话数用于状态，未完话按页比例计入阅读进度。 */
 const SERIES_AGG = `
   (SELECT COUNT(*) FROM effective_chapters c WHERE c.series_id = s.id) AS total_chapters,
   (SELECT COUNT(*) FROM progress p JOIN effective_chapters c ON c.id = p.chapter_id
-     WHERE c.series_id = s.id AND p.completed = 1) AS read_chapters`
+     WHERE c.series_id = s.id AND p.completed = 1) AS read_chapters,
+  (SELECT COUNT(*) FROM progress p JOIN effective_chapters c ON c.id = p.chapter_id
+     WHERE c.series_id = s.id) AS started_chapters,
+  (SELECT COALESCE(SUM(CASE WHEN p.completed = 1 THEN 1.0
+       WHEN c.page_count > 0 THEN MIN(0.99, MAX(0.0, (p.page + 1.0) / c.page_count))
+       ELSE 0.0 END), 0)
+     FROM progress p JOIN effective_chapters c ON c.id = p.chapter_id
+     WHERE c.series_id = s.id) AS chapter_progress`
 
 export interface SeriesListOptions {
   libraryId?: number
   query?: string
-  filter?: 'all' | 'unread' | 'reading' | 'read' | 'recent'
+  filter?: 'all' | 'unread' | 'reading' | 'completed' | 'read' | 'recent'
   /** 归入某虚拟书架 */
   shelfId?: number
   /** 自定义标签（关联表），多个标签 AND 语义 */
@@ -799,12 +809,18 @@ export function listSeries(opts: SeriesListOptions = {}): SeriesRow[] {
   }
   if (opts.filter === 'unread') {
     conds.push(
-      'NOT EXISTS (SELECT 1 FROM progress p JOIN effective_chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id AND p.completed = 1)'
+      'NOT EXISTS (SELECT 1 FROM progress p JOIN effective_chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id)'
     )
   } else if (opts.filter === 'reading') {
     conds.push(
-      'EXISTS (SELECT 1 FROM progress p JOIN effective_chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id AND p.completed = 0)'
+      `EXISTS (SELECT 1 FROM progress p JOIN effective_chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id)
+       AND EXISTS (SELECT 1 FROM effective_chapters c LEFT JOIN progress p ON p.chapter_id = c.id
+         WHERE c.series_id = s.id AND COALESCE(p.completed, 0) = 0)`
     )
+  } else if (opts.filter === 'completed') {
+    conds.push(`EXISTS (SELECT 1 FROM effective_chapters c WHERE c.series_id = s.id)
+      AND NOT EXISTS (SELECT 1 FROM effective_chapters c LEFT JOIN progress p ON p.chapter_id = c.id
+        WHERE c.series_id = s.id AND COALESCE(p.completed, 0) = 0)`)
   } else if (opts.filter === 'read') {
     conds.push(
       'EXISTS (SELECT 1 FROM progress p JOIN effective_chapters c ON c.id = p.chapter_id WHERE c.series_id = s.id)'
@@ -1024,35 +1040,37 @@ export interface ContinueRow {
   series_title: string
   cover_path: string | null
   page_count: number
+  started: boolean
 }
 
-/** 首页「继续阅读」：每个系列取最近更新进度的一话，且该话未读完 */
+/** 首页按系列最近阅读时间排序，读完一话后仍接续下一未读话。 */
 export function continueReading(limit: number): ContinueRow[] {
-  // 窗口函数取每系列 updated_at 最新（并列时取章节 id 大的）的未完话；
-  // 不用 GROUP BY + HAVING 裸列 = MAX：那依赖 SQLite 的特殊扩展行为，语义脆弱
-  return db
+  const series = db
     .prepare(
-      `SELECT c.id AS chapter_id, c.title AS chapter_title, p.page AS read_page,
-              p.completed, p.updated_at, c.page_count,
-              s.id AS series_id, s.title AS series_title, s.cover_path
-       FROM (
-         SELECT p2.chapter_id AS cid,
-                ROW_NUMBER() OVER (
-                  PARTITION BY c2.series_id
-                  ORDER BY p2.updated_at DESC, p2.chapter_id DESC
-                ) AS rn
-         FROM progress p2
-         JOIN effective_chapters c2 ON c2.id = p2.chapter_id
-         WHERE p2.completed = 0
-       ) latest
-       JOIN progress p ON p.chapter_id = latest.cid
-       JOIN effective_chapters c ON c.id = latest.cid
-       JOIN series s ON s.id = c.series_id
-       WHERE latest.rn = 1 AND s.hidden = 0 AND s.missing = 0
-       ORDER BY p.updated_at DESC
+      `SELECT s.id, s.title, s.cover_path, MAX(p.updated_at) AS updated_at
+       FROM series s JOIN effective_chapters c ON c.series_id = s.id
+       JOIN progress p ON p.chapter_id = c.id
+       WHERE s.hidden = 0 AND s.missing = 0
+         AND s.id NOT IN (SELECT source_id FROM series_merges)
+         AND EXISTS (SELECT 1 FROM effective_chapters pending
+           LEFT JOIN progress pp ON pp.chapter_id = pending.id
+           WHERE pending.series_id = s.id AND COALESCE(pp.completed, 0) = 0)
+       GROUP BY s.id
+       ORDER BY updated_at DESC, s.id DESC
        LIMIT ?`
     )
-    .all(limit) as ContinueRow[]
+    .all(limit) as Array<{ id: number; title: string; cover_path: string | null; updated_at: number }>
+  // 只为首页有限个系列读取章节；复用详情排序，合并系列也按卷话顺序接续。
+  return series.flatMap((item) => {
+    const { chapter } = seriesReading(chaptersBySeries(item.id))
+    if (!chapter) return []
+    return [{
+      chapter_id: chapter.id, chapter_title: chapter.title, read_page: chapter.read_page ?? 0,
+      completed: chapter.completed ?? 0, page_count: chapter.page_count,
+      series_id: item.id, series_title: item.title, cover_path: item.cover_path,
+      updated_at: item.updated_at, started: chapter.read_page !== null
+    }]
+  })
 }
 
 /** 首页「最近添加」 */

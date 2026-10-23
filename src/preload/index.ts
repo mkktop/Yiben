@@ -14,7 +14,9 @@ import type {
   Library,
   ReaderPrefs,
   MetadataCandidate,
-  Series
+  Series,
+  SeriesFilter,
+  ContinueItem
 } from '../shared/types'
 
 const api = {
@@ -92,7 +94,7 @@ const api = {
     list: (opts?: {
       libraryId?: number
       query?: string
-      filter?: 'all' | 'unread' | 'reading' | 'read' | 'recent'
+      filter?: SeriesFilter
       /** 归入某虚拟书架 */
       shelfId?: number
       /** 自定义标签（关联表），多个 AND 语义 */
@@ -153,7 +155,7 @@ const api = {
       ipcRenderer.invoke('diagnose:run', libraryId) as Promise<DiagnoseReport>
   },
   home: {
-    continue: () => ipcRenderer.invoke('home:continue'),
+    continue: (): Promise<ContinueItem[]> => ipcRenderer.invoke('home:continue'),
     recent: () => ipcRenderer.invoke('home:recent')
   },
   stats: {

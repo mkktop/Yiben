@@ -72,6 +72,9 @@ export interface Series {
   /** 系列级进度聚合（series:list 返回，非表列）：已读完章节数 / 章节总数 */
   read_chapters?: number
   total_chapters?: number
+  /** 已开始话数，以及已完成话数加上未完话的页进度（未知页数不估算）。 */
+  started_chapters?: number
+  chapter_progress?: number
 }
 
 export interface Chapter {
@@ -113,6 +116,8 @@ export interface ContinueItem {
   series_title: string
   cover_path: string | null
   page_count: number
+  /** 续读目标可能是尚未打开的下一话。 */
+  started: boolean
 }
 
 export interface ReaderChapterInfo {
@@ -128,7 +133,7 @@ export interface ScanProgress {
   title?: string
 }
 
-export type SeriesFilter = 'all' | 'unread' | 'reading' | 'read' | 'recent'
+export type SeriesFilter = 'all' | 'unread' | 'reading' | 'completed' | 'read' | 'recent'
 
 /** 虚拟书架（用户自建的分组，独立于物理书库） */
 export interface ShelfInfo {

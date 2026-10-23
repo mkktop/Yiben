@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { SeriesFilter } from '@shared/types'
 
 interface DataState {
   /** 扫描完成/库变更后自增，驱动列表重新拉取 */
@@ -7,13 +8,21 @@ interface DataState {
   /** 顶栏搜索词 */
   query: string
   setQuery: (q: string) => void
+  libraryFilter: SeriesFilter
+  setLibraryFilter: (filter: SeriesFilter) => void
+  libraryShelfId: number | null
+  setLibraryShelfId: (id: number | null) => void
 }
 
 export const useDataStore = create<DataState>((set) => ({
   version: 0,
   bump: () => set((s) => ({ version: s.version + 1 })),
   query: '',
-  setQuery: (query) => set({ query })
+  setQuery: (query) => set({ query }),
+  libraryFilter: 'all',
+  setLibraryFilter: (libraryFilter) => set({ libraryFilter }),
+  libraryShelfId: null,
+  setLibraryShelfId: (libraryShelfId) => set({ libraryShelfId })
 }))
 
 export interface ScanState {

@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { errorMessage } from '@/lib/utils'
 
 export interface AsyncResult<T> {
   data: T | undefined
   error: string | null
+  loading: boolean
+  reload: () => void
 }
 
 /**
@@ -16,12 +18,16 @@ export interface AsyncResult<T> {
 export function useAsync<T>(fetcher: () => Promise<T>, deps: unknown[]): AsyncResult<T> {
   const [data, setData] = useState<T | undefined>(undefined)
   const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [retry, setRetry] = useState(0)
+  const reload = useCallback(() => setRetry((value) => value + 1), [])
 
   // fetcher 引用不进依赖，由调用方通过 deps 控制刷新时机
   useEffect(() => {
     let alive = true
     setError(null)
-    fetcher()
+    setLoading(true)
+    Promise.resolve().then(fetcher)
       .then((d) => {
         if (alive) setData(d)
       })
@@ -30,11 +36,14 @@ export function useAsync<T>(fetcher: () => Promise<T>, deps: unknown[]): AsyncRe
         console.error('[async]', err)
         setError(errorMessage(err))
       })
+      .finally(() => {
+        if (alive) setLoading(false)
+      })
     return () => {
       alive = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps)
+  }, [...deps, retry])
 
-  return { data, error }
+  return { data, error, loading, reload }
 }
