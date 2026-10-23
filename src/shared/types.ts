@@ -21,6 +21,8 @@ export interface WebDavConfig {
   url: string
   username: string
   password: string
+  /** 挂载的子目录（browse 阶段选择的 base64url 路径 id）；缺省挂 url 本身 */
+  rootId?: string
 }
 export interface MetadataCandidate {
   id: string
@@ -36,6 +38,8 @@ export interface CloudEntryLite {
   id: string
   name: string
   size?: number
+  /** 该目录已是挂载书库（browse 出口由主进程对照 libraries 计算好） */
+  mounted?: boolean
 }
 
 export interface CloudBrowseResult {
@@ -212,6 +216,14 @@ export interface OfflineStatus {
 export interface CloudNotice {
   kind: 'session' | 'ratelimit'
   message: string
+  /** 哪家网盘发出的通知，重连成功后按它精确清除对应提示 */
+  provider?: 'cloud189' | '115'
+}
+
+/** 显式登录/登出导致的会话状态变化（启动时的静默恢复不推送） */
+export interface CloudSessionEvent {
+  provider: 'cloud189' | '115'
+  loggedIn: boolean
 }
 
 /** 阅读偏好（按系列记忆，存主进程 electron-store） */

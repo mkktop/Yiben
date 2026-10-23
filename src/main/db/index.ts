@@ -280,6 +280,16 @@ export function addLibrary(name: string, path: string, kind = 'local'): LibraryR
   return row
 }
 
+/** 书库改名（挂载名可改，云端目录定位字段不受影响） */
+export function renameLibrary(id: number, name: string): void {
+  db.prepare('UPDATE libraries SET name = ? WHERE id = ?').run(name, id)
+}
+
+/** 更新书库路径（WebDAV 凭据变更导致身份哈希变化时同步，保持重复添加幂等去重） */
+export function updateLibraryPath(id: number, path: string): void {
+  db.prepare('UPDATE libraries SET path = ? WHERE id = ?').run(path, id)
+}
+
 export function removeLibrary(id: number): void {
   db.prepare('DELETE FROM libraries WHERE id = ?').run(id)
   db.prepare('DELETE FROM settings WHERE key = ?').run(`webdav:${id}`)

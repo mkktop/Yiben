@@ -20,6 +20,7 @@ import {
   recentlyAdded,
   removeLibrary,
   removeShelf,
+  renameLibrary,
   renameShelf,
   resetSeriesProgress,
   saveProgress,
@@ -42,7 +43,7 @@ import {
 } from './db'
 import { scanOneLocalSeries } from './scanner'
 import { runDiagnose } from './diagnose'
-import { rescanLibrary, runExclusiveScan, isScanning, queueRescan } from './rescan'
+import { rescanLibrary, runExclusiveScan, isScanning, queueRescan, queueProviderRescan } from './rescan'
 import {
   cloudCapacity,
   cloudFamilies,
@@ -86,8 +87,9 @@ import { isValidAccelerator } from './util/accelerator'
 import { longPath } from './util/paths'
 import { createBackup, listBackups, scheduleRestore } from './backup'
 import { offlineStatus, setOfflinePinned } from './cloud189/offline'
-import { addWebDav, webdavList } from './webdav/client'
-import type { WebDavConfig } from '../shared/types'
+import { addWebDav, updateWebDav, webdavBrowseByCreds, webdavList, webdavMountIdentity, webdavProbe, normalizeWebDavUrl, resourceUrl } from './webdav/client'
+import type { CloudBrowseResult, WebDavConfig } from '../shared/types'
+import type { CloudEntry } from './cloud115/parsing'
 import { logReadingTime } from './db'
 import { searchMetadata, applyMetadata, writeComicInfo } from './metadata'
 import { mergeSeries, mergeSources, unmergeSeries } from './seriesMerge'
@@ -95,6 +97,41 @@ import { normalizeReaderPrefs } from '../shared/readerPrefs'
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * 目录浏览统一出口：目录/文件分类，并对照 libraries 给目录行打「已挂载」标记，
+ * 渲染层据此在浏览列表里提示，防止用户以为重复挂载能建出第二个库。
+ */
+function toBrowseResult(
+  entries: CloudEntry[],
+  isMounted: (e: CloudEntry) => boolean
+): CloudBrowseResult {
+  return {
+    folders: entries
+      .filter((e) => e.isDir)
+      .map((e) => ({ id: e.id, name: e.name, mounted: isMounted(e) || undefined })),
+    files: entries
+      .filter((e) => !e.isDir)
+      .map((e) => ({ id: e.id, name: e.name, size: e.size }))
+  }
+}
+
+/** WebDAV 的「已挂载」判定：按连接身份（挂载地址 + 用户名的哈希）对 libraries.path */
+function webdavMountedMatcher(c: { url: string; username: string }): (e: CloudEntry) => boolean {
+  const base = normalizeWebDavUrl(c.url)
+  return (e) =>
+    listLibraries().some(
+      (l) =>
+        l.kind === 'webdav' &&
+        l.path === `webdav://${webdavMountIdentity(resourceUrl(base, e.id), c.username)}`
+    )
+}
+
+/** 显式登录成功：清除全局的会话失效横幅，并自动补扫该网盘的全部挂载 */
+function afterRelogin(provider: 'cloud189' | '115'): void {
+  broadcast('cloud:session', { provider, loggedIn: true })
+  queueProviderRescan(provider)
 }
 
 /** 渲染层可读写的应用配置键（白名单：settings 表里还有加密凭据等敏感键，不能开放） */
@@ -129,6 +166,8 @@ export function registerIpc(): void {
   ipcMain.handle('stats:time', (_event, payload: { chapterId: number; ms: number }) =>
     logReadingTime(payload.chapterId, payload.ms)
   )
+  // ---------- WebDAV / NAS ----------
+  // 与天翼/115 同一交互形态：连接（验证 + 列根目录）→ 按凭据浏览 → 选定目录再挂载
   ipcMain.handle('webdav:add', async (_event, config: WebDavConfig) => {
     const lib = await addWebDav(config)
     queueRescan(lib.id)
@@ -136,6 +175,26 @@ export function registerIpc(): void {
   })
   ipcMain.handle('webdav:list', (_event, payload: { id: number; folder: string }) =>
     webdavList(payload.id, payload.folder)
+  )
+  ipcMain.handle('webdav:probe', async (_event, c: { url: string; username: string; password: string }) =>
+    toBrowseResult(await webdavProbe(c), webdavMountedMatcher(c))
+  )
+  ipcMain.handle(
+    'webdav:browse',
+    async (_event, payload: { config: { url: string; username: string; password: string }; folder: string }) =>
+      toBrowseResult(await webdavBrowseByCreds(payload.config, payload.folder), webdavMountedMatcher(payload.config))
+  )
+  // 改连接信息不删库重建：阅读进度保留，地址/用户名变化后重扫对账
+  ipcMain.handle(
+    'webdav:update',
+    async (
+      _event,
+      payload: { id: number; name?: string; url?: string; username?: string; password?: string }
+    ) => {
+      const lib = await updateWebDav(payload.id, payload)
+      broadcast('library:changed', {})
+      return lib
+    }
   )
   ipcMain.handle('cloud:offlineStatus', (_event, id: number) => offlineStatus(id))
   ipcMain.handle('cloud:offlinePin', (_event, payload: { id: number; pinned: boolean }) => {
@@ -184,6 +243,13 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('libraries:list', () => listLibraries())
+
+  ipcMain.handle('libraries:rename', (_e, payload: { id: number; name: string }) => {
+    const name = payload.name.trim()
+    if (!name) throw new Error('书库名称不能为空')
+    renameLibrary(payload.id, name)
+    return getLibrary(payload.id)
+  })
 
   ipcMain.handle('libraries:add', async (): Promise<LibraryRow | null> => {
     const result = await dialog.showOpenDialog({
@@ -435,15 +501,23 @@ export function registerIpc(): void {
   ipcMain.handle('cloud:status', () => cloudStatus())
 
   ipcMain.handle('cloud:login', (_e, payload: { username: string; password: string }) =>
-    cloudLogin(payload.username, payload.password).then(() => cloudStatus())
+    cloudLogin(payload.username, payload.password).then(() => {
+      afterRelogin('cloud189')
+      return cloudStatus()
+    })
   )
 
-  // 扫码登录：qrStart 取二维码，qrPoll 轮询扫码状态（确认后完成会话建立）
+  // 扫码登录：qrStart 取官方二维码图片，qrPoll 轮询扫码状态（确认后完成会话建立）
   ipcMain.handle('cloud:qrStart', () => cloudQrStart())
-  ipcMain.handle('cloud:qrPoll', () => cloudQrPoll())
+  ipcMain.handle('cloud:qrPoll', async () => {
+    const result = await cloudQrPoll()
+    if (result.state === 'done') afterRelogin('cloud189')
+    return result
+  })
 
   ipcMain.handle('cloud:logout', () => {
     cloudLogout()
+    broadcast('cloud:session', { provider: 'cloud189', loggedIn: false })
     return cloudStatus()
   })
 
@@ -472,10 +546,18 @@ export function registerIpc(): void {
 
   ipcMain.handle('cloud:browse', async (_e, payload: { folderId?: string; familyId?: string }) => {
     const entries = await cloudListAll(payload.folderId ?? '-11', payload.familyId || undefined)
-    return {
-      folders: entries.filter((e) => e.isDir).map((e) => ({ id: e.id, name: e.name })),
-      files: entries.filter((e) => !e.isDir).map((e) => ({ id: e.id, name: e.name, size: e.size }))
-    }
+    // 个人云/家庭云是两套目录树，挂载判定必须带上空间归属
+    const famKey = payload.familyId || null
+    return toBrowseResult(
+      entries,
+      (e) =>
+        listLibraries().some(
+          (l) =>
+            l.kind === 'cloud189' &&
+            l.cloud_folder_id === e.id &&
+            (l.family_id ?? null) === famKey
+        )
+    )
   })
 
   ipcMain.handle(
@@ -498,18 +580,27 @@ export function registerIpc(): void {
 
   // 扫码登录：qrStart 取官方二维码图片，qrPoll 轮询扫码状态（确认后完成会话建立）
   ipcMain.handle('cloud115:qrStart', () => cloud115QrStart())
-  ipcMain.handle('cloud115:qrPoll', () => cloud115QrPoll())
+  ipcMain.handle('cloud115:qrPoll', async () => {
+    const result = await cloud115QrPoll()
+    if (result.state === 'done') afterRelogin('115')
+    return result
+  })
 
-  ipcMain.handle('cloud115:logout', () => cloud115Logout())
+  ipcMain.handle('cloud115:logout', () => {
+    cloud115Logout()
+    broadcast('cloud:session', { provider: '115', loggedIn: false })
+    return cloud115Status()
+  })
 
   ipcMain.handle('cloud115:capacity', () => cloud115Capacity())
 
   ipcMain.handle('cloud115:browse', async (_e, payload: { folderId?: string }) => {
     const entries = await cloud115ListAll(payload.folderId ?? '0')
-    return {
-      folders: entries.filter((e) => e.isDir).map((e) => ({ id: e.id, name: e.name })),
-      files: entries.filter((e) => !e.isDir).map((e) => ({ id: e.id, name: e.name, size: e.size }))
-    }
+    return toBrowseResult(
+      entries,
+      (e) =>
+        listLibraries().some((l) => l.kind === '115' && l.cloud_folder_id === e.id)
+    )
   })
 
   ipcMain.handle('cloud115:addLibrary', async (_e, payload: { folderId: string; name: string }) => {

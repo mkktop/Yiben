@@ -92,6 +92,7 @@ export function noteCloudError(err: unknown): 'session' | 'ratelimit' | null {
     noticedAt.set(kind, Date.now())
     broadcast('cloud:notice', {
       kind,
+      provider: 'cloud189',
       message:
         kind === 'session'
           ? '天翼云盘登录已失效，请到「网盘」页重新连接'

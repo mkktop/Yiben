@@ -23,6 +23,17 @@ export function CloudNoticeToast() {
     })
   }, [])
 
+  // 重新登录成功后让对应网盘的失效横幅立即消退（此前要等用户手动点按钮，重连后横幅会一直挂着误导人）
+  useEffect(() => {
+    return window.yudu.events.onCloudSession((payload) => {
+      setNotice((prev) =>
+        payload.loggedIn && (!prev?.provider || prev.provider === payload.provider)
+          ? null
+          : prev
+      )
+    })
+  }, [])
+
   useEffect(() => {
     if (!notice || notice.kind === 'session') return
     const timer = setTimeout(() => setNotice(null), 8000)

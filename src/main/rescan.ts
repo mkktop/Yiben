@@ -1,4 +1,4 @@
-import { getLibrary } from './db'
+import { getLibrary, listLibraries } from './db'
 import { scanLibrary, type ScanSummary } from './scanner'
 import { scanCloudLibrary } from './cloud189/scanner'
 import { scan115Library } from './cloud115/scanner'
@@ -71,6 +71,17 @@ export async function rescanLibrary(
   } finally {
     releaseScan()
     broadcast('scan:progress', { libraryId, phase: 'done' })
+  }
+}
+
+/**
+ * 重新登录（尤其换了账号）后自动补扫该网盘的全部挂载：
+ * 旧目录可能已失配（missing 策略接管），新账号内容也要被发现。
+ * 增量扫描下未变化的库只花「根目录 + 一级目录列举」，自动补扫成本可控。
+ */
+export function queueProviderRescan(kind: string): void {
+  for (const lib of listLibraries()) {
+    if (lib.kind === kind) queueRescan(lib.id)
   }
 }
 

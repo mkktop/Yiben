@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   CloudBrowseResult,
   CloudNotice,
+  CloudSessionEvent,
   DiagnoseReport,
   PrefetchDone,
   PrefetchProgress,
@@ -30,7 +31,26 @@ const api = {
       id: number,
       folder = 'root'
     ): Promise<Array<{ id: string; name: string; isDir: boolean; size: number }>> =>
-      ipcRenderer.invoke('webdav:list', { id, folder })
+      ipcRenderer.invoke('webdav:list', { id, folder }),
+    /** 连接（验证地址 + 列根目录），返回内容供「浏览选目录」用；配置未落库 */
+    probe: (config: {
+      url: string
+      username: string
+      password: string
+    }): Promise<CloudBrowseResult> => ipcRenderer.invoke('webdav:probe', config),
+    /** 挂载前按连接表单凭据逐层浏览 */
+    browse: (
+      config: { url: string; username: string; password: string },
+      folder: string
+    ): Promise<CloudBrowseResult> => ipcRenderer.invoke('webdav:browse', { config, folder }),
+    /** 修改已挂载书库的连接信息（密码留空 = 保持不变） */
+    update: (payload: {
+      id: number
+      name?: string
+      url?: string
+      username?: string
+      password?: string
+    }): Promise<Library> => ipcRenderer.invoke('webdav:update', payload)
   },
   offline: {
     status: (id: number): Promise<OfflineStatus> => ipcRenderer.invoke('cloud:offlineStatus', id),
@@ -60,7 +80,9 @@ const api = {
     list: () => ipcRenderer.invoke('libraries:list'),
     add: () => ipcRenderer.invoke('libraries:add'),
     remove: (id: number) => ipcRenderer.invoke('libraries:remove', id),
-    rescan: (id: number) => ipcRenderer.invoke('libraries:rescan', id)
+    rescan: (id: number) => ipcRenderer.invoke('libraries:rescan', id),
+    rename: (id: number, name: string) =>
+      ipcRenderer.invoke('libraries:rename', { id, name })
   },
   series: {
     merge: (source: number, target: number): Promise<{ chapters: number }> =>
@@ -303,6 +325,14 @@ const api = {
       ipcRenderer.on('cloud:notice', listener)
       return (): void => {
         ipcRenderer.removeListener('cloud:notice', listener)
+      }
+    },
+    /** 显式登录/登出的会话状态变化：重连成功后全局横幅按网盘精确消退 */
+    onCloudSession: (cb: (payload: CloudSessionEvent) => void) => {
+      const listener = (_e: unknown, payload: CloudSessionEvent): void => cb(payload)
+      ipcRenderer.on('cloud:session', listener)
+      return (): void => {
+        ipcRenderer.removeListener('cloud:session', listener)
       }
     },
     /** 系统文件关联：主进程解析出双击文件的章节 id 后推送 */

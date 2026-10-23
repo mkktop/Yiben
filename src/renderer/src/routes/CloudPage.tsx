@@ -1,17 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  ArrowLeft,
-  ChevronRight,
-  Cloud,
-  CloudUpload,
-  FileArchive,
-  Folder,
-  FolderPlus,
-  Loader2,
-  LogOut,
-  RefreshCw,
-  Trash2
-} from 'lucide-react'
+import { ChevronRight, Cloud, CloudUpload, Loader2, LogOut, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardBody, CardHeader } from '@/components/ui/card'
@@ -22,16 +10,7 @@ import { createDirectoryNavigation } from '@/lib/orderedInteraction'
 import { createQrLogin, type QrApi, type QrState } from '@/lib/qrLogin'
 import type { CloudBrowseResult, CloudStatus, Series } from '@shared/types'
 import { WebDavSection } from '@/components/WebDavSection'
-
-/** 挂载目录（libraries 表里的云端库） */
-interface MountRow {
-  id: number
-  name: string
-  path: string
-  kind: string
-  cloud_folder_id?: string | null
-  family_id?: string | null
-}
+import { BrowseSection, KindBadge, MountListSection, type MountRow } from '@/components/library/CloudShared'
 
 interface Family {
   id: string
@@ -52,28 +31,6 @@ const PROVIDERS = [
   { id: 'baidu', name: '百度网盘', desc: '即将支持', available: false },
   { id: 'onedrive', name: 'OneDrive', desc: '即将支持', available: false }
 ]
-
-function fmtSize(bytes: number): string {
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`
-}
-
-/** 网盘类型徽章：统一小圆角 chip，按类型着色（未知类型按本地兜底） */
-const KIND_BADGE: Record<string, { label: string; cls: string }> = {
-  cloud189: { label: '天翼云', cls: 'bg-primary/10 text-primary' },
-  '115': { label: '115', cls: 'bg-sky-500/10 text-sky-600 dark:text-sky-400' },
-  local: { label: '本地', cls: 'bg-muted text-muted-foreground' }
-}
-
-function KindBadge({ kind }: { kind: string }) {
-  const b = KIND_BADGE[kind] ?? KIND_BADGE.local!
-  return (
-    <span className={cn('shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium', b.cls)}>
-      {b.label}
-    </span>
-  )
-}
 
 /**
  * 云盘页（两层结构）：
@@ -181,6 +138,13 @@ function useCloudQr(
       login.current.close()
     }
   }, [open, refresh])
+
+  // 二维码过期 1.5 秒后自动换新码（官方 App 的行为）；面板上的手动按钮仅作兜底
+  useEffect(() => {
+    if (!open || state !== 'expired') return
+    const timer = setTimeout(() => refresh(), 1500)
+    return () => clearTimeout(timer)
+  }, [state, open, refresh])
 
   return { image, state, error, loading, refresh }
 }
@@ -566,271 +530,6 @@ function DriveCardRow({
   )
 }
 
-// ---------- 挂载目录列表（天翼 / 115 共用） ----------
-
-function MountListSection({
-  mounts,
-  seriesList,
-  spaceLabel,
-  busy,
-  confirmId,
-  setConfirmId,
-  rescanningId,
-  onRemove,
-  onRescan
-}: {
-  mounts: MountRow[] | undefined
-  seriesList: Series[] | undefined
-  spaceLabel: (lib: MountRow) => string
-  busy: boolean
-  confirmId: number | null
-  setConfirmId: (id: number | null) => void
-  rescanningId: number | null
-  onRemove: (lib: MountRow) => void
-  onRescan: (lib: MountRow) => void
-}) {
-  const seriesCount = (libraryId: number): number =>
-    (seriesList ?? []).filter((s) => s.library_id === libraryId).length
-
-  return (
-    <Card>
-      <CardHeader
-        title="已挂载目录"
-        action={<span className="text-xs text-muted-foreground">{mounts?.length ?? 0} 个</span>}
-      />
-      <CardBody>
-        {(mounts ?? []).length === 0 ? (
-          <p className="px-4 py-6 text-center text-xs text-muted-foreground">
-            还没有挂载目录，在下方浏览并添加
-          </p>
-        ) : (
-          <div className="space-y-1">
-            {(mounts ?? []).map((lib) => (
-              <div
-                key={lib.id}
-                className="rounded-lg px-4 py-3 transition-colors hover:bg-accent/60"
-              >
-                <div className="flex items-center gap-3">
-                  <Folder className="size-4 shrink-0 text-muted-foreground" />
-                  <div className="min-w-0 flex-1">
-                    <p className="flex items-center gap-2 truncate text-sm">
-                      <span className="min-w-0 truncate">{lib.name}</span>
-                      <KindBadge kind={lib.kind} />
-                    </p>
-                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                      {spaceLabel(lib)} · {seriesCount(lib.id)} 部漫画
-                    </p>
-                  </div>
-                  {confirmId === lib.id ? (
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      <Button
-                        size="sm"
-                        variant="destructive"
-                        className="h-7 px-2.5 text-xs"
-                        disabled={busy}
-                        onClick={() => onRemove(lib)}
-                      >
-                        确认移除
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 px-2.5 text-xs"
-                        onClick={() => setConfirmId(null)}
-                        disabled={busy}
-                      >
-                        取消
-                      </Button>
-                    </div>
-                  ) : (
-                    <div className="flex shrink-0 items-center gap-1">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 px-2 text-xs text-muted-foreground"
-                        disabled={rescanningId !== null}
-                        onClick={() => onRescan(lib)}
-                        title="重新扫描该目录"
-                      >
-                        <RefreshCw
-                          className={cn('size-3.5', rescanningId === lib.id && 'animate-spin')}
-                        />
-                        {rescanningId === lib.id ? '扫描中' : '重扫'}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
-                        disabled={busy}
-                        onClick={() => setConfirmId(lib.id)}
-                      >
-                        <Trash2 className="size-3.5" />
-                        移除
-                      </Button>
-                    </div>
-                  )}
-                </div>
-                {confirmId === lib.id && (
-                  <p className="mt-1.5 pl-7 text-xs text-destructive">
-                    将从书架移除该目录的全部漫画与阅读进度，云端缓存一并清理，云端原文件不受影响。
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </CardBody>
-    </Card>
-  )
-}
-
-// ---------- 目录浏览（天翼 / 115 共用） ----------
-
-function BrowseSection({
-  stack,
-  browse,
-  browsing,
-  error,
-  onReload,
-  onUp,
-  onRoot,
-  onCrumb,
-  onEnter,
-  addLabel,
-  onAdd,
-  addBusy
-}: {
-  stack: Array<{ id: string; name: string }>
-  browse: CloudBrowseResult | null
-  browsing: boolean
-  error: string
-  onReload: () => void
-  onUp: () => void
-  onRoot: () => void
-  onCrumb: (s: { id: string; name: string }, i: number) => void
-  onEnter: (f: { id: string; name: string }) => void
-  addLabel: string
-  onAdd: () => void
-  addBusy: boolean
-}) {
-  return (
-    <Card>
-      <CardHeader
-        title={
-          <>
-            浏览目录
-            <span className="ml-2 text-xs font-normal text-muted-foreground">添加新挂载</span>
-          </>
-        }
-        action={
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7"
-            onClick={onReload}
-            title="刷新"
-            disabled={browsing}
-          >
-            <RefreshCw className={cn('size-3.5', browsing && 'animate-spin')} />
-          </Button>
-        }
-      />
-      <CardBody>
-        {/* 面包屑（可点任意层级直达） */}
-        <div className="flex min-h-7 flex-wrap items-center gap-1 text-xs text-muted-foreground">
-          {stack.length > 0 && (
-            <button
-              onClick={onUp}
-              className="grid size-6 place-items-center rounded hover:bg-accent"
-              title="上一级"
-            >
-              <ArrowLeft className="size-3.5" />
-            </button>
-          )}
-          <button
-            onClick={onRoot}
-            className={cn(
-              'rounded px-1 hover:text-foreground',
-              stack.length === 0 && 'text-foreground'
-            )}
-          >
-            根目录
-          </button>
-          {stack.map((s, i) => (
-            <span key={s.id} className="flex items-center gap-1">
-              <span className="opacity-40">/</span>
-              <button
-                onClick={() => onCrumb(s, i)}
-                className={cn(
-                  'rounded px-1 hover:text-foreground',
-                  i === stack.length - 1 && 'text-foreground'
-                )}
-              >
-                {s.name}
-              </button>
-            </span>
-          ))}
-        </div>
-
-        <div className="max-h-80 min-h-28 overflow-y-auto rounded-lg border p-1.5">
-          {browsing ? (
-            <div className="flex items-center justify-center py-8 text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-            </div>
-          ) : error && !browse ? (
-            <p className="px-3 py-8 text-center text-xs text-destructive">{error}</p>
-          ) : !browse || (browse.folders.length === 0 && browse.files.length === 0) ? (
-            <p className="px-3 py-8 text-center text-xs text-muted-foreground">此目录为空</p>
-          ) : (
-            <>
-              {browse.folders.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => onEnter(f)}
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors hover:bg-accent/60"
-                >
-                  <Folder className="size-4 shrink-0 text-muted-foreground" />
-                  <span className="truncate">{f.name}</span>
-                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">进入</span>
-                </button>
-              ))}
-              {browse.files.length > 0 && (
-                <div className="mt-1 rounded-lg border bg-muted/30 px-3 py-1.5">
-                  <p className="py-1 text-[11px] text-muted-foreground">
-                    文件 {browse.files.length} 个（挂载所在目录后自动识别漫画压缩包）
-                  </p>
-                  {browse.files.slice(0, 30).map((f) => (
-                    <div
-                      key={f.id}
-                      className="flex items-center gap-2 py-1 text-xs text-muted-foreground"
-                    >
-                      <FileArchive className="size-3.5 shrink-0 opacity-60" />
-                      <span className="truncate">{f.name}</span>
-                      {(f.size ?? 0) > 0 && (
-                        <span className="ml-auto shrink-0">{fmtSize(f.size ?? 0)}</span>
-                      )}
-                    </div>
-                  ))}
-                  {browse.files.length > 30 && (
-                    <p className="py-1 text-[11px] text-muted-foreground">
-                      …其余 {browse.files.length - 30} 个从略
-                    </p>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-
-        <Button size="sm" className="w-full" disabled={addBusy || browsing || !browse} onClick={onAdd}>
-          {addBusy ? <Loader2 className="animate-spin" /> : <FolderPlus />}
-          {addLabel}
-        </Button>
-      </CardBody>
-    </Card>
-  )
-}
-
 // ---------- 第 2 层：单个网盘（天翼云盘） ----------
 
 function Cloud189Drive({
@@ -952,6 +651,30 @@ function Cloud189Drive({
   const [confirmId, setConfirmId] = useState<number | null>(null)
   const [rescanningId, setRescanningId] = useState<number | null>(null)
 
+  // 挂载成功的轻反馈：几秒后自动消失（后续扫描进度由右上角浮标接管）
+  const [mountedNotice, setMountedNotice] = useState('')
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashMountedNotice = useCallback((text: string): void => {
+    if (noticeTimer.current) clearTimeout(noticeTimer.current)
+    setMountedNotice(text)
+    noticeTimer.current = setTimeout(() => setMountedNotice(''), 4000)
+  }, [])
+  useEffect(
+    () => () => {
+      if (noticeTimer.current) clearTimeout(noticeTimer.current)
+    },
+    []
+  )
+
+  const renameMount = async (lib: MountRow, name: string): Promise<void> => {
+    try {
+      await window.yudu.libraries.rename(lib.id, name)
+      bump()
+    } catch (e) {
+      setError(errorMessage(e))
+    }
+  }
+
   const removeMount = async (lib: MountRow): Promise<void> => {
     setBusy(true)
     setError('')
@@ -979,12 +702,14 @@ function Cloud189Drive({
     }
   }
 
-  const addMount = (): void => {
-    const defaultName = famId ? (families.find((f) => f.id === famId)?.name ?? '家庭云') : '个人云'
+  const addMount = (name: string): void => {
     setBusy(true)
     void window.yudu.cloud
-      .addLibrary(current?.id ?? '-11', famId, current?.name ?? defaultName)
-      .then(() => bump())
+      .addLibrary(current?.id ?? '-11', famId, name)
+      .then(() => {
+        bump()
+        flashMountedNotice(`已挂载「${name}」，开始扫描…`)
+      })
       .catch((e) => setError(errorMessage(e)))
       .finally(() => setBusy(false))
   }
@@ -1072,6 +797,7 @@ function Cloud189Drive({
         rescanningId={rescanningId}
         onRemove={(lib) => void removeMount(lib)}
         onRescan={(lib) => void rescanMount(lib)}
+        onRename={(lib, name) => renameMount(lib, name)}
       />
 
       <BrowseSection
@@ -1091,10 +817,12 @@ function Cloud189Drive({
         }}
         onEnter={(f) => browseInto([...stack, f], familyId)}
         addLabel={`把「${current?.name ?? '根目录'}」加入挂载`}
+        defaultName={current?.name ?? (famId ? families.find((f) => f.id === famId)?.name ?? '家庭云' : '个人云')}
         onAdd={addMount}
         addBusy={busy}
       />
 
+      {mountedNotice && <p className="text-xs text-primary">{mountedNotice}</p>}
       {error && browse && <p className="text-xs text-destructive">{error}</p>}
     </div>
   )
@@ -1169,6 +897,30 @@ function Cloud115Drive({
   const [confirmId, setConfirmId] = useState<number | null>(null)
   const [rescanningId, setRescanningId] = useState<number | null>(null)
 
+  // 挂载成功的轻反馈：几秒后自动消失（后续扫描进度由右上角浮标接管）
+  const [mountedNotice, setMountedNotice] = useState('')
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashMountedNotice = useCallback((text: string): void => {
+    if (noticeTimer.current) clearTimeout(noticeTimer.current)
+    setMountedNotice(text)
+    noticeTimer.current = setTimeout(() => setMountedNotice(''), 4000)
+  }, [])
+  useEffect(
+    () => () => {
+      if (noticeTimer.current) clearTimeout(noticeTimer.current)
+    },
+    []
+  )
+
+  const renameMount = async (lib: MountRow, name: string): Promise<void> => {
+    try {
+      await window.yudu.libraries.rename(lib.id, name)
+      bump()
+    } catch (e) {
+      setError(errorMessage(e))
+    }
+  }
+
   const removeMount = async (lib: MountRow): Promise<void> => {
     setBusy(true)
     setError('')
@@ -1196,11 +948,14 @@ function Cloud115Drive({
     }
   }
 
-  const addMount = (): void => {
+  const addMount = (name: string): void => {
     setBusy(true)
     void window.yudu.cloud115
-      .addLibrary(current?.id ?? '0', current?.name ?? '根目录')
-      .then(() => bump())
+      .addLibrary(current?.id ?? '0', name)
+      .then(() => {
+        bump()
+        flashMountedNotice(`已挂载「${name}」，开始扫描…`)
+      })
       .catch((e) => setError(errorMessage(e)))
       .finally(() => setBusy(false))
   }
@@ -1274,6 +1029,7 @@ function Cloud115Drive({
         rescanningId={rescanningId}
         onRemove={(lib) => void removeMount(lib)}
         onRescan={(lib) => void rescanMount(lib)}
+        onRename={(lib, name) => renameMount(lib, name)}
       />
 
       <BrowseSection
@@ -1293,10 +1049,12 @@ function Cloud115Drive({
         }}
         onEnter={(f) => browseInto([...stack, f])}
         addLabel={`把「${current?.name ?? '根目录'}」加入挂载`}
+        defaultName={current?.name ?? '根目录'}
         onAdd={addMount}
         addBusy={busy}
       />
 
+      {mountedNotice && <p className="text-xs text-primary">{mountedNotice}</p>}
       {error && browse && <p className="text-xs text-destructive">{error}</p>}
     </div>
   )
